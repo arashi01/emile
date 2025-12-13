@@ -214,14 +214,14 @@ class TimerSuite extends FunSuite:
       loop <- Loop.create
       timer <- Timer.init(loop)
       // Record initial registry size
-      initialSize = CallbackRegistry.size
+      initialSize = CallbackRegistry.size(loop.ptrUnsafe)
       // Start timer multiple times - should not grow registry
       _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
-      sizeAfterFirst = CallbackRegistry.size
+      sizeAfterFirst = CallbackRegistry.size(loop.ptrUnsafe)
       _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
-      sizeAfterSecond = CallbackRegistry.size
+      sizeAfterSecond = CallbackRegistry.size(loop.ptrUnsafe)
       _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
-      sizeAfterThird = CallbackRegistry.size
+      sizeAfterThird = CallbackRegistry.size(loop.ptrUnsafe)
       _ <- timer.stop
       _ = timer.close
       _ <- loop.run(RunMode.Default)

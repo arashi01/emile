@@ -54,6 +54,21 @@ class AddressErrorSpec extends FunSuite:
     val err2 = AddressError.InvalidPort(200)
     assertNotEquals(err1, err2)
 
+  test("AddressError.InvalidPortString message includes input and detail"):
+    val err = AddressError.InvalidPortString("abc", "non-numeric")
+    val msg = err.message
+    assert(msg.contains("abc"))
+    assert(msg.contains("non-numeric"))
+    assert(msg.contains("Invalid port"))
+
+  test("AddressError.InvalidPortString preserves input and detail"):
+    val err = AddressError.InvalidPortString(" 8080", "whitespace not allowed")
+    err match
+      case AddressError.InvalidPortString(input, detail) =>
+        assertEquals(input, " 8080")
+        assertEquals(detail, "whitespace not allowed")
+      case _ => fail("Expected InvalidPortString")
+
   // ============================================================
   // InvalidIpv4 tests
   // ============================================================
@@ -144,11 +159,13 @@ class AddressErrorSpec extends FunSuite:
 
   test("Different error variants are not equal"):
     val portErr = AddressError.InvalidPort(100)
+    val portStrErr = AddressError.InvalidPortString("abc", "bad")
     val ipv4Err = AddressError.InvalidIpv4("x", "y")
     val ipv6Err = AddressError.InvalidIpv6("x", "y")
     val sockErr = AddressError.InvalidSocketAddress("x", "y")
 
     assertNotEquals(portErr, ipv4Err)
+    assertNotEquals(portErr, portStrErr)
     assertNotEquals(ipv4Err, ipv6Err)
     assertNotEquals(ipv6Err, sockErr)
 

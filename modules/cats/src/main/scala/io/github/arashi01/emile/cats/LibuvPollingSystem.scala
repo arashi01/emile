@@ -95,7 +95,7 @@ object LibuvPollingSystem extends PollingSystem:
   override def poll(poller: LibuvPoller, nanos: Long): CatsPollResult =
     poller.underlying.poll(nanos) match
       case PollResult.Complete    => CatsPollResult.Complete
-      case PollResult.Incomplete  => CatsPollResult.Incomplete
+      case PollResult.Idle        => CatsPollResult.Complete // cats-effect has no Idle; loop liveness is signalled via needsPoll
       case PollResult.Interrupted => CatsPollResult.Interrupted
 
   override def processReadyEvents(poller: LibuvPoller): Boolean =

@@ -160,13 +160,13 @@ class PollSuite extends FunSuite:
       val result = for
         loop <- Loop.create
         poll <- Poll.init(loop, readFd)
-        initialSize = CallbackRegistry.size
+        initialSize = CallbackRegistry.size(loop.ptrUnsafe)
         _ <- poll.start(PollEvent.Readable)((_, _) => ())
-        sizeAfterFirst = CallbackRegistry.size
+        sizeAfterFirst = CallbackRegistry.size(loop.ptrUnsafe)
         _ <- poll.start(PollEvent.Writable)((_, _) => ())
-        sizeAfterSecond = CallbackRegistry.size
+        sizeAfterSecond = CallbackRegistry.size(loop.ptrUnsafe)
         _ <- poll.start(PollEvent.Readable, PollEvent.Writable)((_, _) => ())
-        sizeAfterThird = CallbackRegistry.size
+        sizeAfterThird = CallbackRegistry.size(loop.ptrUnsafe)
         _ <- poll.stop
         _ = poll.close
         _ <- loop.run(RunMode.Default)

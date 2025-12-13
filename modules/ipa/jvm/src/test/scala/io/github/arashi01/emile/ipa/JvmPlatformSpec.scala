@@ -40,12 +40,15 @@ import java.net.InetSocketAddress
  */
 class JvmPlatformSpec extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
   // ============================================================
   // Ipv4Address.toInetAddress tests
   // ============================================================
 
   test("Ipv4Address.toInetAddress creates Inet4Address"):
-    val addr = Ipv4Address.fromString("192.168.1.1").get
+    val addr = expectRight(Ipv4Address.from("192.168.1.1"))
     val inet = addr.toInetAddress
     assert(inet.isInstanceOf[Inet4Address])
     assertEquals(inet.getHostAddress.nn, "192.168.1.1")
@@ -61,7 +64,7 @@ class JvmPlatformSpec extends FunSuite:
     assertEquals(inet.getHostAddress.nn, "0.0.0.0")
 
   test("Ipv4Address.toInetAddress preserves bytes"):
-    val addr = Ipv4Address.fromString("10.20.30.40").get
+    val addr = expectRight(Ipv4Address.from("10.20.30.40"))
     val inet = addr.toInetAddress
     val bytes = inet.getAddress.nn
     assertEquals(bytes.length, 4)
@@ -75,7 +78,7 @@ class JvmPlatformSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.toInetAddress creates Inet6Address"):
-    val addr = Ipv6Address.fromString("2001:db8::1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
     val inet = addr.toInetAddress
     assert(inet.isInstanceOf[Inet6Address])
 
@@ -88,7 +91,7 @@ class JvmPlatformSpec extends FunSuite:
     assert(inet.isAnyLocalAddress)
 
   test("Ipv6Address.toInetAddress preserves bytes"):
-    val addr = Ipv6Address.fromString("::1").get
+    val addr = expectRight(Ipv6Address.from("::1"))
     val inet = addr.toInetAddress
     val bytes = inet.getAddress.nn
     assertEquals(bytes.length, 16)
@@ -96,12 +99,12 @@ class JvmPlatformSpec extends FunSuite:
     assertEquals(bytes(15).toInt, 1)
 
   test("Ipv6Address.toInetAddress for link-local"):
-    val addr = Ipv6Address.fromString("fe80::1").get
+    val addr = expectRight(Ipv6Address.from("fe80::1"))
     val inet = addr.toInetAddress
     assert(inet.isLinkLocalAddress)
 
   test("Ipv6Address.toInetAddress for multicast"):
-    val addr = Ipv6Address.fromString("ff02::1").get
+    val addr = expectRight(Ipv6Address.from("ff02::1"))
     val inet = addr.toInetAddress
     assert(inet.isMulticastAddress)
 
@@ -110,13 +113,13 @@ class JvmPlatformSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.toInetSocketAddress for V4"):
-    val addr = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(8080).toOption.get)
+    val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(8080)))
     val inetSock = addr.toInetSocketAddress
     assertEquals(inetSock.getPort, 8080)
     assertEquals(inetSock.getAddress.nn.getHostAddress.nn, "127.0.0.1")
 
   test("SocketAddress.toInetSocketAddress for V6"):
-    val addr = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(443).toOption.get)
+    val addr = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(443)))
     val inetSock = addr.toInetSocketAddress
     assertEquals(inetSock.getPort, 443)
     assert(inetSock.getAddress.nn.isLoopbackAddress)
@@ -124,7 +127,7 @@ class JvmPlatformSpec extends FunSuite:
   test("SocketAddress.toInetSocketAddress preserves port"):
     val ports = List(0, 80, 443, 8080, 65535)
     ports.foreach { p =>
-      val addr = SocketAddress.localhost(Port.fromInt(p).toOption.get)
+      val addr = SocketAddress.localhost(expectRight(Port.from(p)))
       assertEquals(addr.toInetSocketAddress.getPort, p)
     }
 
@@ -209,7 +212,7 @@ class JvmPlatformSpec extends FunSuite:
   // ============================================================
 
   test("IPv4 roundtrip via InetAddress"):
-    val original = Ipv4Address.fromString("172.16.0.100").get
+    val original = expectRight(Ipv4Address.from("172.16.0.100"))
     val inet = original.toInetAddress
     val roundtripped = fromInet4Address(inet)
     assertEquals(roundtripped, original)
@@ -219,7 +222,7 @@ class JvmPlatformSpec extends FunSuite:
       Ipv4Address.Wildcard,
       Ipv4Address.Loopback,
       Ipv4Address.Broadcast,
-      Ipv4Address.fromString("255.254.253.252").get
+      expectRight(Ipv4Address.from("255.254.253.252"))
     )
 
     addresses.foreach { original =>
@@ -230,8 +233,8 @@ class JvmPlatformSpec extends FunSuite:
 
   test("IPv4 SocketAddress roundtrip via InetSocketAddress"):
     val original = SocketAddress.v4(
-      Ipv4Address.fromString("10.0.0.1").get,
-      Port.fromInt(5432).toOption.get
+      expectRight(Ipv4Address.from("10.0.0.1")),
+      expectRight(Port.from(5432))
     )
     val inetSock = original.toInetSocketAddress
     val result = fromInetSocketAddress(inetSock)
@@ -243,7 +246,7 @@ class JvmPlatformSpec extends FunSuite:
   // ============================================================
 
   test("IPv6 roundtrip via InetAddress"):
-    val original = Ipv6Address.fromString("2001:db8::abcd:1234").get
+    val original = expectRight(Ipv6Address.from("2001:db8::abcd:1234"))
     val inet = original.toInetAddress
     val roundtripped = fromInet6Address(inet)
     assertEquals(roundtripped.highBits, original.highBits)
@@ -253,8 +256,8 @@ class JvmPlatformSpec extends FunSuite:
     val addresses = List(
       Ipv6Address.Wildcard,
       Ipv6Address.Loopback,
-      Ipv6Address.fromString("fe80::1").get,
-      Ipv6Address.fromString("ff02::1").get,
+      expectRight(Ipv6Address.from("fe80::1")),
+      expectRight(Ipv6Address.from("ff02::1")),
       Ipv6Address.fromLongs(-1L, -1L) // All ones
     )
 
@@ -266,8 +269,8 @@ class JvmPlatformSpec extends FunSuite:
 
   test("IPv6 SocketAddress roundtrip via InetSocketAddress"):
     val original = SocketAddress.v6(
-      Ipv6Address.fromString("fe80::1").get,
-      Port.fromInt(443).toOption.get
+      expectRight(Ipv6Address.from("fe80::1")),
+      expectRight(Port.from(443))
     )
     val inetSock = original.toInetSocketAddress
     val result = fromInetSocketAddress(inetSock)
@@ -293,7 +296,7 @@ class JvmPlatformSpec extends FunSuite:
     )
 
     addresses.foreach { addrStr =>
-      val original = Ipv4Address.fromString(addrStr).get
+      val original = expectRight(Ipv4Address.from(addrStr))
       val roundtripped = fromInet4Address(original.toInetAddress)
       assertEquals(roundtripped.show, addrStr, s"Failed for $addrStr")
     }
@@ -309,7 +312,7 @@ class JvmPlatformSpec extends FunSuite:
     )
 
     addresses.foreach { addrStr =>
-      val original = Ipv6Address.fromString(addrStr).get
+      val original = expectRight(Ipv6Address.from(addrStr))
       val roundtripped = fromInet6Address(original.toInetAddress)
       assertEquals(roundtripped.show, addrStr, s"Failed for $addrStr")
     }
@@ -327,22 +330,22 @@ class JvmPlatformSpec extends FunSuite:
     assert(Ipv6Address.Wildcard.toInetAddress.isAnyLocalAddress)
 
   test("toInetAddress.isLinkLocalAddress for IPv4 link-local"):
-    val linkLocal = Ipv4Address.fromString("169.254.1.1").get
+    val linkLocal = expectRight(Ipv4Address.from("169.254.1.1"))
     assert(linkLocal.toInetAddress.isLinkLocalAddress)
     assert(linkLocal.isLinkLocal)
 
   test("toInetAddress.isLinkLocalAddress for IPv6 link-local"):
-    val linkLocal = Ipv6Address.fromString("fe80::1").get
+    val linkLocal = expectRight(Ipv6Address.from("fe80::1"))
     assert(linkLocal.toInetAddress.isLinkLocalAddress)
     assert(linkLocal.isLinkLocal)
 
   test("toInetAddress.isMulticastAddress for IPv4 multicast"):
-    val multicast = Ipv4Address.fromString("224.0.0.1").get
+    val multicast = expectRight(Ipv4Address.from("224.0.0.1"))
     assert(multicast.toInetAddress.isMulticastAddress)
     assert(multicast.isMulticast)
 
   test("toInetAddress.isMulticastAddress for IPv6 multicast"):
-    val multicast = Ipv6Address.fromString("ff02::1").get
+    val multicast = expectRight(Ipv6Address.from("ff02::1"))
     assert(multicast.toInetAddress.isMulticastAddress)
     assert(multicast.isMulticast)
 

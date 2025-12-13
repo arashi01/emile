@@ -6,12 +6,9 @@ package io.github.arashi01.emile
 
 import scala.scalanative.unsafe.*
 import scala.scalanative.libc.stdlib.{calloc, free}
-import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
+import _root_.io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
 
 /**
- * Poll handle for watching file descriptors for I/O events.
- *
- * Poll handles are used to watch file descriptors for readability,
  * writability and disconnection, similar to POSIX `poll(2)`.
  *
  * '''Primary use case:''' Integrating external libraries that need event loop
@@ -134,19 +131,20 @@ object Poll:
      * @return Either an error or success
      */
     def start(events: PollEvent*)(callback: (Int, Set[PollEvent]) => Unit): Either[EmileError, Unit] =
+      val loopPtr = LibUV.uv_handle_get_loop(poll)
       // Unregister any existing callback to prevent leaks when restarting
       val existingId = CallbackIdUtils.getCallbackId(poll)
       if existingId != 0L then
-        val _ = CallbackRegistry.unregister(existingId)
+        val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
       // Register new callback
-      val callbackId = CallbackRegistry.register(callback)
+      val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
       CallbackIdUtils.setCallbackId(poll, callbackId)
 
       val eventMask = events.foldLeft(0)(_ | _.toLibuv)
       val result = LibUV.uv_poll_start(poll, eventMask, pollCallback)
       if result < 0 then
-        val _ = CallbackRegistry.unregister(callbackId)
+        val _ = CallbackRegistry.unregister(loopPtr, callbackId)
         CallbackIdUtils.clearCallbackId(poll)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
@@ -167,30 +165,10 @@ object Poll:
         // Unregister callback when polling stops
         val callbackId = CallbackIdUtils.getCallbackId(poll)
         if callbackId != 0L then
-          val _ = CallbackRegistry.unregister(callbackId)
+          val loopPtr = LibUV.uv_handle_get_loop(poll)
+          val _ = CallbackRegistry.unregister(loopPtr, callbackId)
           CallbackIdUtils.clearCallbackId(poll)
         Right(())
-
-    /**
-     * Close the poll handle synchronously (no callback).
-     *
-     * Transitions the poll handle to `Closed` state. The close is still
-     * asynchronous at the libuv level, but no notification is provided.
-     * The file descriptor can be safely closed after this call.
-     *
-     * @return Either an error or the closed handle
-     */
-    def closeSync: Either[EmileError, Poll[Closed]] =
-      if LibUV.uv_is_closing(poll) != 0 then Left(EmileError.AlreadyClosed)
-      else
-        // Unregister any existing callback before closing
-        val existingId = CallbackIdUtils.getCallbackId(poll)
-        if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
-          CallbackIdUtils.clearCallbackId(poll)
-
-        LibUV.uv_close(poll, Handle.nullCloseCallback)
-        Right(poll)
 
     /**
      * Close the poll handle with a callback.
@@ -204,20 +182,22 @@ object Poll:
       if LibUV.uv_is_closing(poll) != 0 then
         callback(Left(EmileError.AlreadyClosed))
       else
+        val loopPtr = LibUV.uv_handle_get_loop(poll)
         // First, unregister any existing callback
         val existingId = CallbackIdUtils.getCallbackId(poll)
         if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
+          val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
         // Now register the close callback and store its ID
-        val callbackId = CallbackRegistry.register(callback)
+        val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
         CallbackIdUtils.setCallbackId(poll, callbackId)
         LibUV.uv_close(poll, Handle.closeCallback)
 
   /** Poll callback that invokes the registered Scala callback. */
   private val pollCallback: LibUV.PollCB = (handle: Ptr[Byte], status: CInt, events: CInt) =>
+    val loopPtr = LibUV.uv_handle_get_loop(handle)
     val callbackId = CallbackIdUtils.getCallbackId(handle)
-    CallbackRegistry.findAs[(Int, Set[PollEvent]) => Unit](callbackId).foreach { callback =>
+    CallbackRegistry.findAs[(Int, Set[PollEvent]) => Unit](loopPtr, callbackId).foreach { callback =>
       val eventSet = PollEvent.fromLibuv(events)
       callback(status, eventSet)
     }

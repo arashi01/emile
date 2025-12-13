@@ -37,8 +37,9 @@ import scala.quoted.*
  *
  * == Interpolation ==
  *
- * Currently only literal strings are supported (no interpolation variables).
- * This allows full compile-time validation.
+ * Literal-only strings are fully validated at compile time. Mixed literal and
+ * interpolated values are allowed; literal fragments are validated at compile
+ * time while the final value is validated at runtime.
  */
 object literals:
 
@@ -85,69 +86,120 @@ private object Macros:
   def portImpl(ctx: Expr[StringContext], args: Expr[Seq[Any]])(using
       Quotes
   ): Expr[Port] =
-    import quotes.reflect.*
+    import quotes.reflect.report
+    val parts = literalParts(ctx)
 
-    val str = extractLiteralString(ctx, args)
-
-    str.toIntOption match
-      case Some(n) if n >= Port.MinValue && n <= Port.MaxValue =>
-        '{ Port.unsafeFromInt(${ Expr(n) }) }
-      case Some(_) =>
-        report.errorAndAbort(s"Port must be in range 0-65535: $str")
-      case None =>
-        report.errorAndAbort(s"Invalid port number: $str")
+    if isPureLiteral(args) then
+      val str = extractLiteralString(parts)
+      str.toIntOption match
+        case Some(n) if n >= Port.MinValue && n <= Port.MaxValue =>
+          '{ Port.unsafeFromInt(${ Expr(n) }) }
+        case Some(_) =>
+          report.errorAndAbort(s"Port must be in range 0-65535: $str")
+        case None =>
+          report.errorAndAbort(s"Invalid port number: $str")
+    else
+      validatePortFragments(parts)
+      '{ MacrosRuntime.parsePort(${ ctx }, ${ args }) }
 
   def ipv4Impl(ctx: Expr[StringContext], args: Expr[Seq[Any]])(using
       Quotes
   ): Expr[Ipv4Address] =
-    import quotes.reflect.*
+    import quotes.reflect.report
+    val parts = literalParts(ctx)
 
-    val str = extractLiteralString(ctx, args)
-
-    Ipv4Address.parse(str) match
-      case Right(addr) =>
-        val int = addr.toInt
-        '{ Ipv4Address.fromInt(${ Expr(int) }) }
-      case Left(err) =>
-        report.errorAndAbort(err.message)
+    if isPureLiteral(args) then
+      val str = extractLiteralString(parts)
+      Ipv4Address.from(str) match
+        case Right(addr) =>
+          val int = addr.toInt
+          '{ Ipv4Address.fromInt(${ Expr(int) }) }
+        case Left(err) =>
+          report.errorAndAbort(err.message)
+    else
+      validateIpv4Fragments(parts)
+      '{ MacrosRuntime.parseIpv4(${ ctx }, ${ args }) }
 
   def ipv6Impl(ctx: Expr[StringContext], args: Expr[Seq[Any]])(using
       Quotes
   ): Expr[Ipv6Address] =
-    import quotes.reflect.*
+    import quotes.reflect.report
+    val parts = literalParts(ctx)
 
-    val str = extractLiteralString(ctx, args)
+    if isPureLiteral(args) then
+      val str = extractLiteralString(parts)
+      Ipv6Address.from(str) match
+        case Right(addr) =>
+          val high = addr.highBits
+          val low  = addr.lowBits
+          '{ Ipv6Address.fromLongs(${ Expr(high) }, ${ Expr(low) }) }
+        case Left(err) =>
+          report.errorAndAbort(err.message)
+    else
+      validateIpv6Fragments(parts)
+      '{ MacrosRuntime.parseIpv6(${ ctx }, ${ args }) }
 
-    Ipv6Address.parse(str) match
-      case Right(addr) =>
-        val high = addr.highBits
-        val low  = addr.lowBits
-        '{ Ipv6Address.fromLongs(${ Expr(high) }, ${ Expr(low) }) }
-      case Left(err) =>
-        report.errorAndAbort(err.message)
-
-  private def extractLiteralString(
-      ctx: Expr[StringContext],
-      args: Expr[Seq[Any]]
-  )(using Quotes): String =
-    import quotes.reflect.*
-
-    // Verify no interpolation arguments
+  private def isPureLiteral(args: Expr[Seq[Any]])(using Quotes): Boolean =
     args match
-      case '{ Seq() }          => () // OK - no args
-      case '{ Seq(${ _ }*) }   => report.errorAndAbort("Interpolation not supported - use a literal string")
-      case _ => () // Assume empty for now
+      case Varargs(Nil) => true
+      case '{ Seq() }   => true
+      case _            => false
 
-    // Extract the string parts from the StringContext
+  private def literalParts(ctx: Expr[StringContext])(using Quotes): List[String] =
+    import quotes.reflect.report
     ctx match
       case '{ StringContext(${ Varargs(parts) }*) } =>
-        parts.toList match
-          case List(Expr(s: String)) => s
-          case List(part) =>
-            report.errorAndAbort("Expected a literal string")
-          case _ =>
-            report.errorAndAbort("Interpolation not supported - use a literal string")
+        parts.toList.map {
+          case Expr(s: String) => s
+          case _               => report.errorAndAbort("Expected literal string parts")
+        }
       case _ =>
         report.errorAndAbort("Expected a literal string context")
 
+  private def extractLiteralString(parts: List[String])(using Quotes): String =
+    import quotes.reflect.report
+    parts match
+      case head :: Nil => head
+      case _ => report.errorAndAbort("Interpolation not supported - use a literal string")
+
+  private def validatePortFragments(parts: List[String])(using Quotes): Unit =
+    import quotes.reflect.report
+    parts.find(p => p.nonEmpty && !p.forall(_.isDigit)).foreach { bad =>
+      report.errorAndAbort(s"Invalid port literal fragment: '$bad'")
+    }
+
+  private def validateIpv4Fragments(parts: List[String])(using Quotes): Unit =
+    import quotes.reflect.report
+    val validChar: Char => Boolean = c => c.isDigit || c == '.'
+    parts.find(p => p.exists(ch => !validChar(ch))).foreach { bad =>
+      report.errorAndAbort(s"Invalid IPv4 literal fragment: '$bad'")
+    }
+
+  private def validateIpv6Fragments(parts: List[String])(using Quotes): Unit =
+    import quotes.reflect.report
+    val validChar: Char => Boolean = c =>
+      c.isDigit || c == ':' || c == '.' || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+    parts.find(p => p.exists(ch => !validChar(ch))).foreach { bad =>
+      report.errorAndAbort(s"Invalid IPv6 literal fragment: '$bad'")
+    }
+
 end Macros
+
+private[ipa] object MacrosRuntime:
+  def parsePort(ctx: StringContext, args: Seq[Any]): Port =
+    val value = ctx.s(args*)
+    Port.from(value) match
+      case Right(p)  => p
+      case Left(err) => throw IllegalArgumentException(err.message)
+
+  def parseIpv4(ctx: StringContext, args: Seq[Any]): Ipv4Address =
+    val value = ctx.s(args*)
+    Ipv4Address.from(value) match
+      case Right(addr) => addr
+      case Left(err)   => throw IllegalArgumentException(err.message)
+
+  def parseIpv6(ctx: StringContext, args: Seq[Any]): Ipv6Address =
+    val value = ctx.s(args*)
+    Ipv6Address.from(value) match
+      case Right(addr) => addr
+      case Left(err)   => throw IllegalArgumentException(err.message)

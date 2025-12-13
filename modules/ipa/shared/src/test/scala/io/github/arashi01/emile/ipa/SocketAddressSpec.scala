@@ -35,18 +35,21 @@ import munit.FunSuite
  */
 class SocketAddressSpec extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
   // ============================================================
   // v4 constructor tests
   // ============================================================
 
   test("SocketAddress.v4 creates IPv4 socket address"):
-    val addr = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(8080).toOption.get)
+    val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(8080)))
     assert(addr.isV4)
     assert(!addr.isV6)
 
   test("SocketAddress.v4 preserves address and port"):
-    val ip = Ipv4Address.fromString("192.168.1.1").get
-    val port = Port.fromInt(443).toOption.get
+    val ip = expectRight(Ipv4Address.from("192.168.1.1"))
+    val port = expectRight(Port.from(443))
     val addr = SocketAddress.v4(ip, port)
     assertEquals(addr.port, port)
     assertEquals(addr.toIpv4, Some(ip))
@@ -56,20 +59,20 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.v6 creates IPv6 socket address (simple)"):
-    val addr = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(8080).toOption.get)
+    val addr = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(8080)))
     assert(addr.isV6)
     assert(!addr.isV4)
 
   test("SocketAddress.v6 preserves address and port"):
-    val ip = Ipv6Address.fromString("2001:db8::1").get
-    val port = Port.fromInt(443).toOption.get
+    val ip = expectRight(Ipv6Address.from("2001:db8::1"))
+    val port = expectRight(Port.from(443))
     val addr = SocketAddress.v6(ip, port)
     assertEquals(addr.port, port)
     assertEquals(addr.toIpv6, Some(ip))
 
   test("SocketAddress.v6 with explicit flowInfo and scopeId"):
-    val ip = Ipv6Address.fromString("fe80::1").get
-    val port = Port.fromInt(80).toOption.get
+    val ip = expectRight(Ipv6Address.from("fe80::1"))
+    val port = expectRight(Port.from(80))
     val flowInfo = FlowInfo(0x12345)
     val scopeId = ScopeId(2)
     val addr = SocketAddress.v6(ip, port, flowInfo, scopeId)
@@ -86,12 +89,12 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.port extracts from V4"):
-    val port = Port.fromInt(3000).toOption.get
+    val port = expectRight(Port.from(3000))
     val addr = SocketAddress.v4(Ipv4Address.Loopback, port)
     assertEquals(addr.port, port)
 
   test("SocketAddress.port extracts from V6"):
-    val port = Port.fromInt(5432).toOption.get
+    val port = expectRight(Port.from(5432))
     val addr = SocketAddress.v6(Ipv6Address.Loopback, port)
     assertEquals(addr.port, port)
 
@@ -114,15 +117,15 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.fold invokes fv4 for V4 address"):
-    val addr = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
+    val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
     val result = addr.fold((ip, p) => s"v4:${ip.show}:${p.value}") { (_, _, _, _) =>
       "v6"
     }
     assertEquals(result, "v4:127.0.0.1:80")
 
   test("SocketAddress.fold invokes fv6 for V6 address"):
-    val addr = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(443).toOption.get)
-    val result = addr.fold((_, _) => "v4") { (ip, p, fi, sid) =>
+    val addr = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(443)))
+    val result = addr.fold((_, _) => "v4") { (ip, p, _, _) =>
       s"v6:${ip.show}:${p.value}"
     }
     assertEquals(result, "v6:::1:443")
@@ -141,17 +144,22 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.show for V4"):
-    val addr = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(8080).toOption.get)
+    val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(8080)))
     assertEquals(addr.show, "127.0.0.1:8080")
 
   test("SocketAddress.show for V6"):
-    val addr = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(443).toOption.get)
+    val addr = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(443)))
     assertEquals(addr.show, "[::1]:443")
 
   test("SocketAddress.show for V6 with complex address"):
-    val ip = Ipv6Address.fromString("2001:db8::1").get
-    val addr = SocketAddress.v6(ip, Port.fromInt(80).toOption.get)
+    val ip = expectRight(Ipv6Address.from("2001:db8::1"))
+    val addr = SocketAddress.v6(ip, expectRight(Port.from(80)))
     assertEquals(addr.show, "[2001:db8::1]:80")
+
+  test("SocketAddress.show for V6 with scope and flow"):
+    val ip = expectRight(Ipv6Address.from("fe80::1"))
+    val addr = SocketAddress.v6(ip, expectRight(Port.from(8080)), FlowInfo(0x10), ScopeId(3))
+    assertEquals(addr.show, "[fe80::1%3;flow=16]:8080")
 
   test("SocketAddress.show for wildcard addresses"):
     val v4 = SocketAddress.v4(Ipv4Address.Wildcard, Port.Wildcard)
@@ -160,11 +168,29 @@ class SocketAddressSpec extends FunSuite:
     assertEquals(v6.show, "[::]:0")
 
   // ============================================================
+  // writeTo tests
+  // ============================================================
+
+  test("SocketAddress.writeTo appends V4 representation"):
+    val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(8080)))
+    val sb = new java.lang.StringBuilder("addr=")
+    val result = addr.writeTo(sb)
+    assertEquals(sb.toString, "addr=127.0.0.1:8080")
+    assertEquals(result, sb)
+
+  test("SocketAddress.writeTo appends V6 with scope and flow"):
+    val ip = expectRight(Ipv6Address.from("fe80::1"))
+    val addr = SocketAddress.v6(ip, expectRight(Port.from(8080)), FlowInfo(1), ScopeId(2))
+    val sb = new java.lang.StringBuilder
+    addr.writeTo(sb): Unit
+    assertEquals(sb.toString, "[fe80::1%2;flow=1]:8080")
+
+  // ============================================================
   // toIpv4 / toIpv6 tests
   // ============================================================
 
   test("SocketAddress.toIpv4 returns Some for V4"):
-    val ip = Ipv4Address.fromString("10.0.0.1").get
+    val ip = expectRight(Ipv4Address.from("10.0.0.1"))
     val addr = SocketAddress.v4(ip, Port.Wildcard)
     assertEquals(addr.toIpv4, Some(ip))
 
@@ -173,7 +199,7 @@ class SocketAddressSpec extends FunSuite:
     assertEquals(addr.toIpv4, None)
 
   test("SocketAddress.toIpv6 returns Some for V6"):
-    val ip = Ipv6Address.fromString("fe80::1").get
+    val ip = expectRight(Ipv6Address.from("fe80::1"))
     val addr = SocketAddress.v6(ip, Port.Wildcard)
     assertEquals(addr.toIpv6, Some(ip))
 
@@ -186,8 +212,8 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.withPort creates new V4 with different port"):
-    val original = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
-    val newPort = Port.fromInt(443).toOption.get
+    val original = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
+    val newPort = expectRight(Port.from(443))
     val modified = original.withPort(newPort)
     assertEquals(modified.port, newPort)
     assertEquals(modified.toIpv4, original.toIpv4)
@@ -196,8 +222,8 @@ class SocketAddressSpec extends FunSuite:
   test("SocketAddress.withPort creates new V6 with different port"):
     val flowInfo = FlowInfo(100)
     val scopeId = ScopeId(2)
-    val original = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(80).toOption.get, flowInfo, scopeId)
-    val newPort = Port.fromInt(8080).toOption.get
+    val original = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(80)), flowInfo, scopeId)
+    val newPort = expectRight(Port.from(8080))
     val modified = original.withPort(newPort)
     assertEquals(modified.port, newPort)
     // FlowInfo and ScopeId should be preserved
@@ -208,80 +234,111 @@ class SocketAddressSpec extends FunSuite:
       case _ => fail("Expected V6")
 
   // ============================================================
-  // fromString tests - IPv4
+  // from(String) tests - IPv4
   // ============================================================
 
-  test("SocketAddress.fromString parses IPv4:port"):
-    val result = SocketAddress.fromString("192.168.1.1:8080")
+  test("SocketAddress.from parses IPv4:port"):
+    val result = SocketAddress.from("192.168.1.1:8080")
     assert(result.isRight)
     result.foreach { addr =>
       assert(addr.isV4)
       assertEquals(addr.show, "192.168.1.1:8080")
     }
 
-  test("SocketAddress.fromString parses localhost:port"):
-    val result = SocketAddress.fromString("127.0.0.1:80")
+  test("SocketAddress.from parses localhost:port"):
+    val result = SocketAddress.from("127.0.0.1:80")
     assert(result.isRight)
     result.foreach { addr =>
       assertEquals(addr.port.value, 80)
     }
 
-  test("SocketAddress.fromString returns Left for missing port separator"):
-    val result = SocketAddress.fromString("192.168.1.1")
+  test("SocketAddress.from returns Left for missing port separator"):
+    val result = SocketAddress.from("192.168.1.1")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for invalid IPv4"):
-    val result = SocketAddress.fromString("256.1.1.1:80")
+  test("SocketAddress.from returns Left for invalid IPv4"):
+    val result = SocketAddress.from("256.1.1.1:80")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for invalid port"):
-    val result = SocketAddress.fromString("192.168.1.1:99999")
+  test("SocketAddress.from returns Left for invalid port"):
+    val result = SocketAddress.from("192.168.1.1:99999")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for empty string"):
-    val result = SocketAddress.fromString("")
+  test("SocketAddress.from returns Left for empty string"):
+    val result = SocketAddress.from("")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for null"):
-    val result = SocketAddress.fromString(null)
+  test("SocketAddress.from returns Left for null"):
+    val result = SocketAddress.from(null)
     assert(result.isLeft)
 
   // ============================================================
-  // fromString tests - IPv6
+  // from(String) tests - IPv6
   // ============================================================
 
-  test("SocketAddress.fromString parses [IPv6]:port"):
-    val result = SocketAddress.fromString("[::1]:8080")
+  test("SocketAddress.from parses [IPv6]:port"):
+    val result = SocketAddress.from("[::1]:8080")
     assert(result.isRight)
     result.foreach { addr =>
       assert(addr.isV6)
       assertEquals(addr.show, "[::1]:8080")
     }
 
-  test("SocketAddress.fromString parses [2001:db8::1]:port"):
-    val result = SocketAddress.fromString("[2001:db8::1]:443")
+  test("SocketAddress.from parses [2001:db8::1]:port"):
+    val result = SocketAddress.from("[2001:db8::1]:443")
     assert(result.isRight)
     result.foreach { addr =>
       assertEquals(addr.port.value, 443)
     }
 
-  test("SocketAddress.fromString parses [::]:port"):
-    val result = SocketAddress.fromString("[::]:0")
+  test("SocketAddress.from parses [::]:port"):
+    val result = SocketAddress.from("[::]:0")
     assert(result.isRight)
     result.foreach { addr =>
       assertEquals(addr.show, "[::]:0")
     }
 
-  test("SocketAddress.fromString returns Left for missing closing bracket"):
-    val result = SocketAddress.fromString("[::1:8080")
+  test("SocketAddress.from parses scope-aware V6"):
+    val result = SocketAddress.from("[fe80::1%4]:8080")
+    assert(result.isRight)
+    result.foreach {
+      case SocketAddress.V6(ip, port, fi, sid) =>
+        assertEquals(ip.show, "fe80::1")
+        assertEquals(port.value, 8080)
+        assertEquals(fi, FlowInfo.Default)
+        assertEquals(sid.value, 4)
+      case other => fail(s"Expected V6, got $other")
+    }
+
+  test("SocketAddress.from parses flow info for V6"):
+    val result = SocketAddress.from("[2001:db8::1;flow=0x20]:443")
+    assert(result.isRight)
+    result.foreach {
+      case SocketAddress.V6(_, port, fi, sid) =>
+        assertEquals(port.value, 443)
+        assertEquals(fi.value, 32)
+        assertEquals(sid, ScopeId.Default)
+      case _ => fail("Expected V6")
+    }
+
+  test("SocketAddress.from rejects invalid flow info"):
+    val result = SocketAddress.from("[2001:db8::1;flow=xyz]:443")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for missing port after bracket"):
-    val result = SocketAddress.fromString("[::1]")
+  test("SocketAddress.from rejects empty scope id"):
+    val result = SocketAddress.from("[fe80::1%]:80")
     assert(result.isLeft)
 
-  test("SocketAddress.fromString returns Left for invalid IPv6"):
-    val result = SocketAddress.fromString("[invalid]:80")
+  test("SocketAddress.from returns Left for missing closing bracket"):
+    val result = SocketAddress.from("[::1:8080")
+    assert(result.isLeft)
+
+  test("SocketAddress.from returns Left for missing port after bracket"):
+    val result = SocketAddress.from("[::1]")
+    assert(result.isLeft)
+
+  test("SocketAddress.from returns Left for invalid IPv6"):
+    val result = SocketAddress.from("[invalid]:80")
     assert(result.isLeft)
 
   // ============================================================
@@ -289,25 +346,25 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress.localhost creates 127.0.0.1:port"):
-    val port = Port.fromInt(3000).toOption.get
+    val port = expectRight(Port.from(3000))
     val addr = SocketAddress.localhost(port)
     assertEquals(addr.show, "127.0.0.1:3000")
     assert(addr.isV4)
 
   test("SocketAddress.localhost6 creates [::1]:port"):
-    val port = Port.fromInt(3000).toOption.get
+    val port = expectRight(Port.from(3000))
     val addr = SocketAddress.localhost6(port)
     assertEquals(addr.show, "[::1]:3000")
     assert(addr.isV6)
 
   test("SocketAddress.any creates 0.0.0.0:port"):
-    val port = Port.fromInt(8080).toOption.get
+    val port = expectRight(Port.from(8080))
     val addr = SocketAddress.any(port)
     assertEquals(addr.show, "0.0.0.0:8080")
     assert(addr.isV4)
 
   test("SocketAddress.any6 creates [::]:port"):
-    val port = Port.fromInt(8080).toOption.get
+    val port = expectRight(Port.from(8080))
     val addr = SocketAddress.any6(port)
     assertEquals(addr.show, "[::]:8080")
     assert(addr.isV6)
@@ -326,18 +383,18 @@ class SocketAddressSpec extends FunSuite:
   // ============================================================
 
   test("SocketAddress equality for V4"):
-    val addr1 = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
-    val addr2 = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
+    val addr1 = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
+    val addr2 = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
     assertEquals(addr1, addr2)
 
   test("SocketAddress inequality for different ports"):
-    val addr1 = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
-    val addr2 = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(443).toOption.get)
+    val addr1 = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
+    val addr2 = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(443)))
     assertNotEquals(addr1, addr2)
 
   test("SocketAddress inequality for V4 vs V6"):
-    val v4 = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(80).toOption.get)
-    val v6 = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(80).toOption.get)
+    val v4 = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(80)))
+    val v6 = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(80)))
     assertNotEquals(v4, v6)
 
 end SocketAddressSpec

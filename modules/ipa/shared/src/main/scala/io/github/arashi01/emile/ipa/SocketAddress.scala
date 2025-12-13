@@ -32,8 +32,8 @@ package io.github.arashi01.emile.ipa
  * val v6 = SocketAddress.v6(Ipv6Address.Loopback, Port(8080))
  *
  * // Parse from string
- * val parsed = SocketAddress.fromString("127.0.0.1:8080")
- * val parsedV6 = SocketAddress.fromString("[::1]:8080")
+ * val parsed = SocketAddress.from("127.0.0.1:8080")
+ * val parsedV6 = SocketAddress.from("[::1]:8080")
  * }}}
  *
  * == Convenience Constructors ==
@@ -136,7 +136,7 @@ object SocketAddress:
    * @return
    *   Either an error or the parsed socket address
    */
-  def fromString(value: String): Either[AddressError, SocketAddress] =
+  def from(value: String): Either[AddressError, SocketAddress] =
     if value == null || value.isEmpty then
       Left(AddressError.InvalidSocketAddress(value, "empty input"))
     else if value.startsWith("[") then parseIpv6SocketAddress(value)
@@ -150,33 +150,83 @@ object SocketAddress:
       val portPart    = value.substring(colonIndex + 1).nn
 
       for
-        address <- Ipv4Address.parse(addressPart).left.map { e =>
+        address <- Ipv4Address.from(addressPart).left.map { e =>
           AddressError.InvalidSocketAddress(value, e.message)
         }
-        port <- Port.fromString(portPart).toRight {
-          AddressError.InvalidSocketAddress(value, s"invalid port: $portPart")
+        port <- Port.from(portPart).left.map { e =>
+          AddressError.InvalidSocketAddress(value, e.message)
         }
       yield V4(address, port)
 
-  private def parseIpv6SocketAddress(value: String): Either[AddressError, SocketAddress] =
-    // Format: [ipv6]:port
+  private def parseIpv6SocketAddress(value: String)(using ScopeIdPlatform): Either[AddressError, SocketAddress] =
+    // Format: [ipv6[%scope][;flow=<hex|dec>]]:port
     val closeBracket = value.indexOf(']')
     if closeBracket < 0 then
       Left(AddressError.InvalidSocketAddress(value, "missing closing bracket ']'"))
     else if closeBracket + 1 >= value.length || value.charAt(closeBracket + 1) != ':' then
       Left(AddressError.InvalidSocketAddress(value, "missing port separator ':' after ']'"))
     else
-      val addressPart = value.substring(1, closeBracket).nn
-      val portPart    = value.substring(closeBracket + 2).nn
+      val rawAddress = value.substring(1, closeBracket).nn
+      val portPart   = value.substring(closeBracket + 2).nn
 
       for
-        address <- Ipv6Address.parse(addressPart).left.map { e =>
+        (addressText, scopeId, flowInfo) <- decodeIpv6Meta(rawAddress, value)
+        address <- Ipv6Address.from(addressText).left.map { e =>
           AddressError.InvalidSocketAddress(value, e.message)
         }
-        port <- Port.fromString(portPart).toRight {
-          AddressError.InvalidSocketAddress(value, s"invalid port: $portPart")
+        port <- Port.from(portPart).left.map { e =>
+          AddressError.InvalidSocketAddress(value, e.message)
         }
-      yield V6(address, port, FlowInfo.Default, ScopeId.Default)
+      yield V6(address, port, flowInfo, scopeId)
+
+  private def decodeIpv6Meta(address: String, input: String)(using ScopeIdPlatform): Either[AddressError, (String, ScopeId, FlowInfo)] =
+    val flowIndex = address.indexOf(";flow=")
+    val (scopePart, flowInfo) =
+      if flowIndex < 0 then (address, Right(FlowInfo.Default))
+      else
+        val flowSegment = address.substring(flowIndex + 6).nn
+        (address.substring(0, flowIndex).nn, parseFlowInfo(flowSegment, input))
+
+    flowInfo.flatMap { fi =>
+      val percentIdx = scopePart.indexOf('%')
+      if percentIdx < 0 then Right((scopePart, ScopeId.Default, fi))
+      else
+        val ipv6Text = scopePart.substring(0, percentIdx).nn
+        val scopeRaw = scopePart.substring(percentIdx + 1).nn
+        parseScopeId(scopeRaw, input).map(sid => (ipv6Text, sid, fi))
+    }
+
+  private def parseScopeId(raw: String, input: String)(using ScopeIdPlatform): Either[AddressError, ScopeId] =
+    if raw.isEmpty then
+      Left(AddressError.InvalidSocketAddress(input, "scope identifier is empty"))
+    else if raw.forall(_.isDigit) then
+      try
+        val value = java.lang.Long.parseUnsignedLong(raw)
+        if value < 0 || value > 0xffffffffL then
+          Left(AddressError.InvalidSocketAddress(input, s"scope identifier '$raw' out of range"))
+        else Right(ScopeId(value.toInt))
+      catch
+        case _: NumberFormatException =>
+          Left(AddressError.InvalidSocketAddress(input, s"scope identifier '$raw' is not numeric"))
+    else
+      summon[ScopeIdPlatform].fromInterfaceName(raw) match
+        case Right(sid)  => Right(sid)
+        case Left(reason) => Left(AddressError.InvalidSocketAddress(input, reason))
+
+  private def parseFlowInfo(raw: String, input: String): Either[AddressError, FlowInfo] =
+    if raw.isEmpty then Left(AddressError.InvalidSocketAddress(input, "flow info is empty"))
+    else
+      val (digits, base) =
+        if raw.startsWith("0x") || raw.startsWith("0X") then (raw.drop(2), 16)
+        else (raw, 10)
+      try
+        val value = java.lang.Long.parseUnsignedLong(digits, base)
+        if value < 0 || value > 0xffffffffL then
+          Left(AddressError.InvalidSocketAddress(input, s"flow info '$raw' out of range"))
+        else Right(FlowInfo(value.toInt))
+      catch
+        case _: NumberFormatException =>
+          Left(AddressError.InvalidSocketAddress(input, s"invalid flow info '$raw'"))
 
   /**
    * Convenient localhost constructor for IPv4.
@@ -242,10 +292,32 @@ object SocketAddress:
         case V4(a, p)          => fv4(a, p)
         case V6(a, p, fi, sid) => fv6(a, p, fi, sid)
 
+    /** Append string representation to an Appendable. */
+    def writeTo[A <: Appendable](out: A): A = addr match
+      case V4(a, p) =>
+        a.writeTo(out): Unit
+        out.append(':'): Unit
+        p.writeTo(out): Unit
+        out
+      case V6(a, p, fi, sid) =>
+        out.append('['): Unit
+        a.writeTo(out): Unit
+        if sid != ScopeId.Default then
+          out.append('%'): Unit
+          out.append(java.lang.Integer.toUnsignedString(sid.value)): Unit
+        if fi != FlowInfo.Default then
+          out.append(";flow="): Unit
+          out.append(java.lang.Long.toUnsignedString(fi.value.toLong)): Unit
+        out.append(']'): Unit
+        out.append(':'): Unit
+        p.writeTo(out): Unit
+        out
+    
     /** String representation. */
-    def show: String = addr match
-      case V4(a, p)       => s"${a.show}:${p.value}"
-      case V6(a, p, _, _) => s"[${a.show}]:${p.value}"
+    def show: String =
+      val sb = new java.lang.StringBuilder
+      writeTo(sb): Unit
+      sb.toString
 
     /** Get the IPv4 address if this is a V4 socket address. */
     def toIpv4: Option[Ipv4Address] = addr match

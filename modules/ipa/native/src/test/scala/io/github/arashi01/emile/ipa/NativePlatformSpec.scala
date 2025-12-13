@@ -19,12 +19,19 @@ package io.github.arashi01.emile.ipa
 import munit.FunSuite
 
 import scala.scalanative.posix.arpa.inet.*
+import scala.scalanative.posix.net.`if`
 import scala.scalanative.posix.netinet.in.*
 import scala.scalanative.posix.netinet.inOps.*
 import scala.scalanative.posix.sys.socket.*
 import scala.scalanative.posix.sys.socketOps.*
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
+
+@link("uv")
+@extern
+private object LibuvNet:
+  def uv_ip6_addr(ip: CString, port: CInt, addr: Ptr[sockaddr_in6]): CInt = extern
+  def uv_ip6_name(src: Ptr[sockaddr_in6], dst: CString, size: CSize): CInt = extern
 
 /**
  * Platform-specific tests for Native sockaddr conversions.
@@ -44,12 +51,31 @@ import scala.scalanative.unsigned.*
  */
 class NativePlatformSpec extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
+  private def firstInterface(): (String, Int) =
+    Zone.acquire { implicit z =>
+      val names = `if`.if_nameindex()
+      if names == null then fail("if_nameindex returned null")
+      try
+        var cursor = names
+        var chosen: Option[(String, Int)] = None
+        while cursor._1 != 0.toUInt && cursor._2 != null && chosen.isEmpty do
+          val name = fromCString(cursor._2)
+          val idx  = cursor._1.toInt
+          if idx > 0 && name.nonEmpty then chosen = Some((name, idx))
+          cursor = cursor + 1
+        chosen.getOrElse(fail("No network interfaces available for scope ID test"))
+      finally `if`.if_freenameindex(names)
+    }
+
   // ============================================================
   // Ipv4Address.toNetworkOrder tests
   // ============================================================
 
   test("Ipv4Address.toNetworkOrder converts to network byte order"):
-    val addr = Ipv4Address.fromString("192.168.1.1").get
+    val addr = expectRight(Ipv4Address.from("192.168.1.1"))
     val networkOrder = addr.toNetworkOrder
     // Network order is big-endian
     // 192.168.1.1 = 0xC0A80101 in host order
@@ -82,8 +108,8 @@ class NativePlatformSpec extends FunSuite:
   test("Ipv4Address.fillSockAddrIn populates sockaddr_in correctly"):
     Zone.acquire { implicit z =>
       val sockaddr = alloc[sockaddr_in]()
-      val addr = Ipv4Address.fromString("192.168.1.100").get
-      val port = Port.fromInt(8080).toOption.get
+      val addr = expectRight(Ipv4Address.from("192.168.1.100"))
+      val port = expectRight(Port.from(8080))
 
       addr.fillSockAddrIn(sockaddr, port)
 
@@ -95,7 +121,7 @@ class NativePlatformSpec extends FunSuite:
   test("Ipv4Address.fillSockAddrIn for loopback"):
     Zone.acquire { implicit z =>
       val sockaddr = alloc[sockaddr_in]()
-      Ipv4Address.Loopback.fillSockAddrIn(sockaddr, Port.fromInt(80).toOption.get)
+      Ipv4Address.Loopback.fillSockAddrIn(sockaddr, expectRight(Port.from(80)))
 
       assertEquals(sockaddr.sin_family.toInt, AF_INET)
       assertEquals(ntohs(sockaddr.sin_port).toInt, 80)
@@ -165,7 +191,7 @@ class NativePlatformSpec extends FunSuite:
     Zone.acquire { implicit z =>
       val sockaddr = alloc[sockaddr_in6]()
       val addr = Ipv6Address.Loopback
-      val port = Port.fromInt(443).toOption.get
+      val port = expectRight(Port.from(443))
       val flowInfo = FlowInfo(0x12345)
       val scopeId = ScopeId(2)
 
@@ -174,7 +200,7 @@ class NativePlatformSpec extends FunSuite:
       assertEquals(sockaddr.sin6_family.toInt, AF_INET6)
       assertEquals(ntohs(sockaddr.sin6_port).toInt, 443)
       assertEquals(ntohl(sockaddr.sin6_flowinfo).toInt, 0x12345)
-      assertEquals(ntohl(sockaddr.sin6_scope_id).toInt, 2)
+      assertEquals(sockaddr.sin6_scope_id.toInt, 2)
     }
 
   test("Ipv6Address.fillSockAddrIn6 with default flowInfo and scopeId"):
@@ -194,7 +220,7 @@ class NativePlatformSpec extends FunSuite:
 
   test("SocketAddress.toSockAddr allocates and fills sockaddr_in for V4"):
     Zone.acquire { implicit z =>
-      val addr = SocketAddress.v4(Ipv4Address.Loopback, Port.fromInt(8080).toOption.get)
+      val addr = SocketAddress.v4(Ipv4Address.Loopback, expectRight(Port.from(8080)))
       val sockaddr = addr.toSockAddr
 
       assertEquals(sockaddr.sa_family.toInt, AF_INET)
@@ -205,7 +231,7 @@ class NativePlatformSpec extends FunSuite:
 
   test("SocketAddress.toSockAddr allocates and fills sockaddr_in6 for V6"):
     Zone.acquire { implicit z =>
-      val addr = SocketAddress.v6(Ipv6Address.Loopback, Port.fromInt(443).toOption.get)
+      val addr = SocketAddress.v6(Ipv6Address.Loopback, expectRight(Port.from(443)))
       val sockaddr = addr.toSockAddr
 
       assertEquals(sockaddr.sa_family.toInt, AF_INET6)
@@ -251,7 +277,7 @@ class NativePlatformSpec extends FunSuite:
       sin6.sin6_family = AF_INET6.toUShort
       sin6.sin6_port = htons(8080.toUShort)
       sin6.sin6_flowinfo = htonl(100.toUInt)
-      sin6.sin6_scope_id = htonl(2.toUInt)
+      sin6.sin6_scope_id = 2.toUInt
       // Write ::1 to sin6_addr via raw pointer access
       val addrPtr = sin6.asInstanceOf[Ptr[Byte]] + 8 // SIN6_ADDR_OFFSET
       (0 until 15).foreach(i => addrPtr(i) = 0.toByte)
@@ -280,6 +306,35 @@ class NativePlatformSpec extends FunSuite:
       assert(result.isLeft)
     }
 
+  test("uv_ip6_addr handles scope-aware addresses and roundtrips scopeId/flowInfo"):
+    val (ifaceName, ifaceIndex) = firstInterface()
+    Zone.acquire { implicit z =>
+      val sin6 = alloc[sockaddr_in6]()
+      val addressWithScope = s"fe80::1%$ifaceName"
+      val res = LibuvNet.uv_ip6_addr(toCString(addressWithScope), 5353, sin6)
+      assertEquals(res.toInt, 0, clue = s"uv_ip6_addr failed for $addressWithScope")
+
+      // Override flowinfo to a non-default value
+      sin6.sin6_flowinfo = htonl(0x1234.toUInt)
+
+      val parsed = fromSockAddr(sin6.asInstanceOf[Ptr[sockaddr]])
+      assert(parsed.isRight)
+      parsed.foreach {
+        case SocketAddress.V6(_, port, fi, sid) =>
+          assertEquals(port.value, 5353)
+          assertEquals(fi.value, 0x1234)
+          assertEquals(sid.value, ifaceIndex)
+        case other => fail(s"Expected V6, got $other")
+      }
+
+      val buf = alloc[Byte](64)
+      val nameRes = LibuvNet.uv_ip6_name(sin6, buf, 64.toUSize)
+      assertEquals(nameRes.toInt, 0, clue = "uv_ip6_name failed")
+      val named = fromCString(buf)
+      assert(named.startsWith("fe80::1"), clue = s"expected address, got $named")
+      assertEquals(sin6.sin6_scope_id.toInt, ifaceIndex, clue = "scope id preserved after uv_ip6_name")
+    }
+
   // ============================================================
   // Full roundtrip tests
   // ============================================================
@@ -287,8 +342,8 @@ class NativePlatformSpec extends FunSuite:
   test("IPv4 sockaddr roundtrip"):
     Zone.acquire { implicit z =>
       val original = SocketAddress.v4(
-        Ipv4Address.fromString("10.20.30.40").get,
-        Port.fromInt(5432).toOption.get
+        expectRight(Ipv4Address.from("10.20.30.40")),
+        expectRight(Port.from(5432))
       )
 
       val sockaddr = original.toSockAddr
@@ -307,8 +362,8 @@ class NativePlatformSpec extends FunSuite:
       val flowInfo = FlowInfo(0x12345)
       val scopeId = ScopeId(3)
       val original = SocketAddress.v6(
-        Ipv6Address.fromString("2001:db8::1").get,
-        Port.fromInt(443).toOption.get,
+        expectRight(Ipv6Address.from("2001:db8::1")),
+        expectRight(Port.from(443)),
         flowInfo,
         scopeId
       )
@@ -330,12 +385,12 @@ class NativePlatformSpec extends FunSuite:
 
   test("Loopback sockaddr roundtrip"):
     Zone.acquire { implicit z =>
-      val v4 = SocketAddress.localhost(Port.fromInt(80).toOption.get)
+      val v4 = SocketAddress.localhost(expectRight(Port.from(80)))
       val v4Result = fromSockAddr(v4.toSockAddr)
       assert(v4Result.isRight)
       assertEquals(v4Result.toOption.get.show, "127.0.0.1:80")
 
-      val v6 = SocketAddress.localhost6(Port.fromInt(443).toOption.get)
+      val v6 = SocketAddress.localhost6(expectRight(Port.from(443)))
       val v6Result = fromSockAddr(v6.toSockAddr)
       assert(v6Result.isRight)
       assertEquals(v6Result.toOption.get.show, "[::1]:443")
@@ -343,12 +398,12 @@ class NativePlatformSpec extends FunSuite:
 
   test("Wildcard sockaddr roundtrip"):
     Zone.acquire { implicit z =>
-      val v4 = SocketAddress.any(Port.fromInt(0).toOption.get)
+      val v4 = SocketAddress.any(expectRight(Port.from(0)))
       val v4Result = fromSockAddr(v4.toSockAddr)
       assert(v4Result.isRight)
       assertEquals(v4Result.toOption.get.show, "0.0.0.0:0")
 
-      val v6 = SocketAddress.any6(Port.fromInt(0).toOption.get)
+      val v6 = SocketAddress.any6(expectRight(Port.from(0)))
       val v6Result = fromSockAddr(v6.toSockAddr)
       assert(v6Result.isRight)
       assertEquals(v6Result.toOption.get.show, "[::]:0")
@@ -366,8 +421,8 @@ class NativePlatformSpec extends FunSuite:
 
       addresses.foreach { addrStr =>
         val original = SocketAddress.v4(
-          Ipv4Address.fromString(addrStr).get,
-          Port.fromInt(8080).toOption.get
+          expectRight(Ipv4Address.from(addrStr)),
+          expectRight(Port.from(8080))
         )
         val result = fromSockAddr(original.toSockAddr)
         assert(result.isRight, s"Failed for $addrStr")
@@ -387,8 +442,8 @@ class NativePlatformSpec extends FunSuite:
 
       addresses.foreach { addrStr =>
         val original = SocketAddress.v6(
-          Ipv6Address.fromString(addrStr).get,
-          Port.fromInt(443).toOption.get
+          expectRight(Ipv6Address.from(addrStr)),
+          expectRight(Port.from(443))
         )
         val result = fromSockAddr(original.toSockAddr)
         assert(result.isRight, s"Failed for $addrStr")

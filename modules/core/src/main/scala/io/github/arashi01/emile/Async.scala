@@ -6,7 +6,8 @@ package io.github.arashi01.emile
 
 import scala.scalanative.unsafe.*
 import scala.scalanative.libc.stdlib.{calloc, free}
-import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
+import io.github.arashi01.emile.{EmileError, ErrorCode, HandleState, HandleType, Loop, Open}
+import _root_.io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
 
 /**
  * Async handle for cross-thread event loop wakeup.
@@ -78,7 +79,7 @@ object Async:
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
         // Now register callback and store ID in initialized handle
-        val callbackId = CallbackRegistry.register(callback)
+        val callbackId = CallbackRegistry.registerLoop(loop.ptrUnsafe, callback)
         CallbackIdUtils.setCallbackId(handle, callbackId)
         Right(handle)
 
@@ -113,26 +114,6 @@ object Async:
       else Right(())
 
     /**
-     * Close the async handle synchronously (no callback).
-     *
-     * Transitions the async handle to `Closed` state. The close is still
-     * asynchronous at the libuv level, but no notification is provided.
-     *
-     * @return Either an error or the closed handle
-     */
-    def closeSync: Either[EmileError, Async[Closed]] =
-      if LibUV.uv_is_closing(async) != 0 then Left(EmileError.AlreadyClosed)
-      else
-        // Unregister the async callback before closing
-        val existingId = CallbackIdUtils.getCallbackId(async)
-        if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
-          CallbackIdUtils.clearCallbackId(async)
-
-        LibUV.uv_close(async, Handle.nullCloseCallback)
-        Right(async)
-
-    /**
      * Close the async handle with a callback.
      *
      * The callback will be invoked when the close is complete.
@@ -144,20 +125,22 @@ object Async:
       if LibUV.uv_is_closing(async) != 0 then
         callback(Left(EmileError.AlreadyClosed))
       else
+        val loopPtr = LibUV.uv_handle_get_loop(async)
         // First, unregister the async callback
         val existingId = CallbackIdUtils.getCallbackId(async)
         if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
+          val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
         // Now register the close callback and store its ID
-        val callbackId = CallbackRegistry.register(callback)
+        val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
         CallbackIdUtils.setCallbackId(async, callbackId)
         LibUV.uv_close(async, Handle.closeCallback)
 
   /** Async callback that invokes the registered Scala callback. */
   private val asyncCallback: LibUV.AsyncCB = (handle: Ptr[Byte]) =>
+    val loopPtr = LibUV.uv_handle_get_loop(handle)
     val callbackId = CallbackIdUtils.getCallbackId(handle)
-    CallbackRegistry.findAs[() => Unit](callbackId).foreach { callback =>
+    CallbackRegistry.findAs[() => Unit](loopPtr, callbackId).foreach { callback =>
       callback()
     }
 

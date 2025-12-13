@@ -26,8 +26,8 @@ package io.github.arashi01.emile.ipa
  *
  * {{{
  * // From string (runtime validation)
- * val addr: Option[Ipv6Address] = Ipv6Address.fromString("::1")
- * val full: Option[Ipv6Address] = Ipv6Address.fromString("2001:db8::1")
+ * val addr: Either[AddressError, Ipv6Address] = Ipv6Address.from("::1")
+ * val full: Either[AddressError, Ipv6Address] = Ipv6Address.from("2001:db8::1")
  *
  * // From raw Longs (unchecked)
  * val raw = Ipv6Address.fromLongs(highBits, lowBits)
@@ -59,41 +59,21 @@ object Ipv6Address:
   val Loopback: Ipv6Address = (0L, 1L)
 
   /**
-   * Parse an IPv6 address from string.
-   *
-   * Supports standard IPv6 notation including :: compression.
-   *
-   * @param value
-   *   The string to parse (e.g., "::1", "2001:db8::1")
-   * @return
-   *   Some(Ipv6Address) if valid, None otherwise
-   */
-  def fromString(value: String): Option[Ipv6Address] =
-    parse(value).toOption
-
-  /**
    * Parse an IPv6 address from string with error details.
-   *
-   * @param value
-   *   The string to parse
-   * @return
-   *   Either an error or the parsed address
    */
-  def parse(value: String): Either[AddressError, Ipv6Address] =
+  def from(value: String): Either[AddressError, Ipv6Address] =
     parseIpv6(value)
 
   private def parseIpv6(value: String): Either[AddressError, Ipv6Address] =
-    if value == null || value.isEmpty then Left(AddressError.InvalidIpv6(value, "empty input"))
+    if value == null || value.isEmpty then Left(AddressError.InvalidIpv6(String.valueOf(value), "empty input"))
     else
       try
         parseIpv6Groups(value).flatMap { groups =>
-          // Validate all groups are in range
           val invalidGroup = groups.find(g => g < 0 || g > 0xffff)
           invalidGroup match
             case Some(g) =>
               Left(AddressError.InvalidIpv6(value, s"group value $g out of range"))
             case None =>
-              // Combine into two Longs
               val high =
                 (groups(0).toLong << 48) |
                   (groups(1).toLong << 32) |
@@ -170,14 +150,14 @@ object Ipv6Address:
    * @return
    *   Some(Ipv6Address) if valid, None otherwise
    */
-  def fromBytes(bytes: Array[Byte]): Option[Ipv6Address] =
-    if bytes.length != 16 then None
+  def from(bytes: Array[Byte]): Either[AddressError, Ipv6Address] =
+    if bytes.length != 16 then Left(AddressError.InvalidIpv6("<bytes>", s"expected 16 bytes, got ${bytes.length}"))
     else
       var high = 0L
       var low  = 0L
       for i <- 0 until 8 do high = (high << 8) | (bytes(i) & 0xff)
       for i <- 8 until 16 do low = (low << 8) | (bytes(i) & 0xff)
-      Some((high, low))
+      Right((high, low))
 
   /**
    * Create an IPv4-mapped IPv6 address (::ffff:a.b.c.d).
@@ -216,7 +196,12 @@ object Ipv6Address:
      * Uses :: compression for the longest run of zeros, lowercase hex.
      */
     def show: String =
-      // Extract 8 groups
+      val sb = new java.lang.StringBuilder
+      writeTo(sb): Unit
+      sb.toString
+
+    /** Append RFC 5952 representation to an Appendable. */
+    def writeTo[A <: Appendable](out: A): A =
       val groups = new Array[Int](8)
       groups(0) = ((addr._1 >>> 48) & 0xffff).toInt
       groups(1) = ((addr._1 >>> 32) & 0xffff).toInt
@@ -227,7 +212,6 @@ object Ipv6Address:
       groups(6) = ((addr._2 >>> 16) & 0xffff).toInt
       groups(7) = (addr._2 & 0xffff).toInt
 
-      // Find longest run of zeros for :: compression
       var bestStart  = -1
       var bestLength = 0
       var runStart   = -1
@@ -244,26 +228,24 @@ object Ipv6Address:
           runStart = -1
           runLength = 0
 
-      // Check final run
       if runLength > bestLength && runLength > 1 then
         bestStart = runStart
         bestLength = runLength
 
-      // Build string
-      val sb = new StringBuilder
       var i  = 0
       var afterCompression = false
       while i < 8 do
         if i == bestStart then
-          sb.append("::")
+          out.append("::"): Unit
           i += bestLength
           afterCompression = true
         else
-          if i > 0 && !afterCompression then sb.append(':')
+          if i > 0 && !afterCompression then
+            out.append(':'): Unit
           afterCompression = false
-          sb.append(java.lang.Integer.toHexString(groups(i)))
+          out.append(java.lang.Integer.toHexString(groups(i))): Unit
           i += 1
-      sb.toString
+      out
 
     /** True if this is the loopback address (::1). */
     def isLoopback: Boolean = addr._1 == 0L && addr._2 == 1L

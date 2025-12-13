@@ -132,13 +132,14 @@ object Timer:
      * @return Either an error or success
      */
     def start(timeout: Duration, repeat: Duration)(callback: () => Unit): Either[EmileError, Unit] =
+      val loopPtr = LibUV.uv_handle_get_loop(timer)
       // Unregister any existing callback to prevent leaks when restarting timer
       val existingId = CallbackIdUtils.getCallbackId(timer)
       if existingId != 0L then
-        val _ = CallbackRegistry.unregister(existingId)
+        val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
       // Register new callback and store ID in timer data
-      val callbackId = CallbackRegistry.register(callback)
+      val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
       CallbackIdUtils.setCallbackId(timer, callbackId)
 
       val result = LibUV.uv_timer_start(
@@ -149,7 +150,7 @@ object Timer:
       )
       if result < 0 then
         // Clean up callback registration on failure
-        val _ = CallbackRegistry.unregister(callbackId)
+        val _ = CallbackRegistry.unregister(loopPtr, callbackId)
         CallbackIdUtils.clearCallbackId(timer)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
@@ -180,7 +181,8 @@ object Timer:
         // Unregister callback when timer stops
         val callbackId = CallbackIdUtils.getCallbackId(timer)
         if callbackId != 0L then
-          val _ = CallbackRegistry.unregister(callbackId)
+          val loopPtr = LibUV.uv_handle_get_loop(timer)
+          val _ = CallbackRegistry.unregister(loopPtr, callbackId)
           CallbackIdUtils.clearCallbackId(timer)
         Right(())
 
@@ -234,17 +236,7 @@ object Timer:
      *
      * @return Either an error or the closed timer
      */
-    def closeSync: Either[EmileError, Timer[Closed]] =
-      if LibUV.uv_is_closing(timer) != 0 then Left(EmileError.AlreadyClosed)
-      else
-        // Unregister any existing callback before closing
-        val existingId = CallbackIdUtils.getCallbackId(timer)
-        if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
-          CallbackIdUtils.clearCallbackId(timer)
 
-        LibUV.uv_close(timer, Handle.nullCloseCallback)
-        Right(timer)
 
     /**
      * Close the timer with a callback.
@@ -258,20 +250,22 @@ object Timer:
       if LibUV.uv_is_closing(timer) != 0 then
         callback(Left(EmileError.AlreadyClosed))
       else
+        val loopPtr = LibUV.uv_handle_get_loop(timer)
         // First, unregister any existing callback
         val existingId = CallbackIdUtils.getCallbackId(timer)
         if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
+          val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
         // Now register the close callback and store its ID
-        val callbackId = CallbackRegistry.register(callback)
+        val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
         CallbackIdUtils.setCallbackId(timer, callbackId)
         LibUV.uv_close(timer, Handle.closeCallback)
 
   /** Timer callback that invokes the registered Scala callback. */
   private val timerCallback: LibUV.TimerCB = (handle: Ptr[Byte]) =>
+    val loopPtr = LibUV.uv_handle_get_loop(handle)
     val callbackId = CallbackIdUtils.getCallbackId(handle)
-    CallbackRegistry.findAs[() => Unit](callbackId).foreach { callback =>
+    CallbackRegistry.findAs[() => Unit](loopPtr, callbackId).foreach { callback =>
       callback()
     }
 

@@ -22,9 +22,9 @@ import munit.FunSuite
  * Tests for Ipv6Address opaque type.
  *
  * Tests cover:
- * - fromString / parse: parsing with :: compression
+ * - from: parsing with :: compression
  * - fromLongs: high/low bits construction
- * - fromBytes: byte array parsing
+ * - from: byte array parsing
  * - fromIpv4Mapped: IPv4-mapped IPv6 construction
  * - highBits / lowBits: extraction
  * - toBytes: byte array extraction
@@ -36,96 +36,80 @@ import munit.FunSuite
  */
 class Ipv6AddressSpec extends FunSuite:
 
+  private def expectRight[A](either: Either[AddressError, A]): A =
+    either.fold(err => fail(err.message), identity)
+
   // ============================================================
-  // fromString / parse tests - basic parsing
+  // from(String) tests - basic parsing
   // ============================================================
 
-  test("Ipv6Address.fromString parses full address"):
-    val result = Ipv6Address.fromString("2001:0db8:0000:0000:0000:0000:0000:0001")
-    assert(result.isDefined)
-    // show should use :: compression
-    assert(result.get.show.contains("2001:db8::1") || result.get.show.contains("2001:0db8"))
+  test("Ipv6Address.from parses full address"):
+    val result = Ipv6Address.from("2001:0db8:0000:0000:0000:0000:0000:0001")
+    val addr = expectRight(result)
+    assert(addr.show.contains("2001:db8::1") || addr.show.contains("2001:0db8"))
 
-  test("Ipv6Address.fromString parses loopback ::1"):
-    val result = Ipv6Address.fromString("::1")
-    assert(result.isDefined)
-    assertEquals(result.get.show, "::1")
+  test("Ipv6Address.from parses loopback ::1"):
+    val addr = expectRight(Ipv6Address.from("::1"))
+    assertEquals(addr.show, "::1")
 
-  test("Ipv6Address.fromString parses wildcard ::"):
-    val result = Ipv6Address.fromString("::")
-    assert(result.isDefined)
-    assertEquals(result.get.show, "::")
+  test("Ipv6Address.from parses wildcard ::"):
+    val addr = expectRight(Ipv6Address.from("::"))
+    assertEquals(addr.show, "::")
 
-  test("Ipv6Address.fromString parses link-local fe80::1"):
-    val result = Ipv6Address.fromString("fe80::1")
-    assert(result.isDefined)
-    assertEquals(result.get.show, "fe80::1")
+  test("Ipv6Address.from parses link-local fe80::1"):
+    val addr = expectRight(Ipv6Address.from("fe80::1"))
+    assertEquals(addr.show, "fe80::1")
 
-  test("Ipv6Address.fromString parses multicast ff02::1"):
-    val result = Ipv6Address.fromString("ff02::1")
-    assert(result.isDefined)
-    assertEquals(result.get.show, "ff02::1")
+  test("Ipv6Address.from parses multicast ff02::1"):
+    val addr = expectRight(Ipv6Address.from("ff02::1"))
+    assertEquals(addr.show, "ff02::1")
 
-  test("Ipv6Address.fromString parses address with :: in middle"):
-    val result = Ipv6Address.fromString("2001:db8::1234:5678")
-    assert(result.isDefined)
+  test("Ipv6Address.from parses address with :: in middle"):
+    assert(Ipv6Address.from("2001:db8::1234:5678").isRight)
 
-  test("Ipv6Address.fromString parses address with :: at end"):
-    val result = Ipv6Address.fromString("2001:db8::")
-    assert(result.isDefined)
+  test("Ipv6Address.from parses address with :: at end"):
+    assert(Ipv6Address.from("2001:db8::").isRight)
 
-  test("Ipv6Address.fromString parses address with :: at start"):
-    val result = Ipv6Address.fromString("::ffff:192.168.1.1")
-    // This is IPv4-mapped, we may or may not support this format
-    // If not supported, that's also valid behavior
+  test("Ipv6Address.from parses address with :: at start"):
+    val _ = Ipv6Address.from("::ffff:192.168.1.1")
     ()
 
-  test("Ipv6Address.fromString parses mixed case"):
-    val result = Ipv6Address.fromString("FE80::ABCD:1234")
-    assert(result.isDefined)
+  test("Ipv6Address.from parses mixed case"):
+    assert(Ipv6Address.from("FE80::ABCD:1234").isRight)
 
   // ============================================================
-  // fromString / parse tests - error cases
+  // from(String) tests - error cases
   // ============================================================
 
-  test("Ipv6Address.fromString returns None for empty string"):
-    val result = Ipv6Address.fromString("")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for empty string"):
+    assert(Ipv6Address.from("").isLeft)
 
-  test("Ipv6Address.fromString returns None for null"):
-    val result = Ipv6Address.fromString(null)
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for null"):
+    assert(Ipv6Address.from(null: String).isLeft)
 
-  test("Ipv6Address.fromString returns None for single colon"):
-    val result = Ipv6Address.fromString(":")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for single colon"):
+    assert(Ipv6Address.from(":").isLeft)
 
-  test("Ipv6Address.fromString returns None for triple colon"):
-    val result = Ipv6Address.fromString(":::")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for triple colon"):
+    assert(Ipv6Address.from(":::").isLeft)
 
-  test("Ipv6Address.fromString returns None for too many groups"):
-    val result = Ipv6Address.fromString("1:2:3:4:5:6:7:8:9")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for too many groups"):
+    assert(Ipv6Address.from("1:2:3:4:5:6:7:8:9").isLeft)
 
-  test("Ipv6Address.fromString returns None for too few groups without ::"):
-    val result = Ipv6Address.fromString("1:2:3:4:5:6:7")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for too few groups without ::"):
+    assert(Ipv6Address.from("1:2:3:4:5:6:7").isLeft)
 
-  test("Ipv6Address.fromString returns None for invalid hex"):
-    val result = Ipv6Address.fromString("ghij::1")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for invalid hex"):
+    assert(Ipv6Address.from("ghij::1").isLeft)
 
-  test("Ipv6Address.fromString returns None for group > 4 digits"):
-    val result = Ipv6Address.fromString("12345::1")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for group > 4 digits"):
+    assert(Ipv6Address.from("12345::1").isLeft)
 
-  test("Ipv6Address.fromString returns None for multiple ::"):
-    val result = Ipv6Address.fromString("2001::db8::1")
-    assert(result.isEmpty)
+  test("Ipv6Address.from returns error for multiple ::"):
+    assert(Ipv6Address.from("2001::db8::1").isLeft)
 
-  test("Ipv6Address.parse returns Left with error details"):
-    val result = Ipv6Address.parse("invalid")
+  test("Ipv6Address.from returns Left with error details"):
+    val result = Ipv6Address.from("invalid")
     assert(result.isLeft)
     result.left.foreach { err =>
       assert(err.isInstanceOf[AddressError.InvalidIpv6])
@@ -155,33 +139,38 @@ class Ipv6AddressSpec extends FunSuite:
     assertEquals(addr.lowBits, low)
 
   // ============================================================
-  // fromBytes tests
+  // from(bytes) tests
   // ============================================================
 
-  test("Ipv6Address.fromBytes accepts valid 16-byte array"):
+  test("Ipv6Address.from accepts valid 16-byte array"):
     val bytes = Array.fill[Byte](16)(0)
     bytes(15) = 1 // ::1
-    val result = Ipv6Address.fromBytes(bytes)
-    assert(result.isDefined)
-    assertEquals(result.get.show, "::1")
+    val addr = expectRight(Ipv6Address.from(bytes))
+    assertEquals(addr.show, "::1")
 
-  test("Ipv6Address.fromBytes returns None for wrong length"):
-    assert(Ipv6Address.fromBytes(Array.fill[Byte](15)(0)).isEmpty)
-    assert(Ipv6Address.fromBytes(Array.fill[Byte](17)(0)).isEmpty)
-    assert(Ipv6Address.fromBytes(Array[Byte]()).isEmpty)
+  test("Ipv6Address.from returns error for wrong length"):
+    assert(Ipv6Address.from(Array.fill[Byte](15)(0)).isLeft)
+    assert(Ipv6Address.from(Array.fill[Byte](17)(0)).isLeft)
+    assert(Ipv6Address.from(Array[Byte]()).isLeft)
 
-  test("Ipv6Address.fromBytes handles high byte values correctly"):
+  test("Ipv6Address.from handles high byte values correctly"):
     val bytes = Array.fill[Byte](16)(0xff.toByte)
-    val result = Ipv6Address.fromBytes(bytes)
-    assert(result.isDefined)
-    assertEquals(result.get.show, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+    val addr = expectRight(Ipv6Address.from(bytes))
+    assertEquals(addr.show, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+
+  test("Ipv6Address.from is insensitive to source array mutation"):
+    val bytes = Array.fill[Byte](16)(0)
+    bytes(15) = 1 // ::1
+    val addr = expectRight(Ipv6Address.from(bytes))
+    bytes.indices.foreach(i => bytes(i) = 0x7f.toByte)
+    assertEquals(addr.show, "::1")
 
   // ============================================================
   // fromIpv4Mapped tests
   // ============================================================
 
   test("Ipv6Address.fromIpv4Mapped creates IPv4-mapped address"):
-    val ipv4 = Ipv4Address.fromString("192.168.1.1").get
+    val ipv4 = expectRight(Ipv4Address.from("192.168.1.1"))
     val ipv6 = Ipv6Address.fromIpv4Mapped(ipv4)
     assert(ipv6.isIpv4Mapped)
     assertEquals(ipv6.toIpv4, Some(ipv4))
@@ -196,12 +185,12 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.highBits extracts upper 64 bits"):
-    val addr = Ipv6Address.fromString("2001:db8::1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
     // 2001:0db8:0000:0000 = 0x20010db800000000
     assertEquals(addr.highBits, 0x20010db800000000L)
 
   test("Ipv6Address.lowBits extracts lower 64 bits"):
-    val addr = Ipv6Address.fromString("::1").get
+    val addr = expectRight(Ipv6Address.from("::1"))
     assertEquals(addr.lowBits, 1L)
 
   test("Ipv6Address.highBits for wildcard is 0"):
@@ -215,7 +204,7 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.toBytes returns correct bytes"):
-    val addr = Ipv6Address.fromString("::1").get
+    val addr = expectRight(Ipv6Address.from("::1"))
     val bytes = addr.toBytes
     assertEquals(bytes.length, 16)
     // First 15 bytes should be 0, last byte should be 1
@@ -223,8 +212,8 @@ class Ipv6AddressSpec extends FunSuite:
     assertEquals(bytes(15).toInt, 1)
 
   test("Ipv6Address.toBytes roundtrips correctly"):
-    val original = Ipv6Address.fromString("2001:db8::1234:5678").get
-    val roundtripped = Ipv6Address.fromBytes(original.toBytes).get
+    val original = expectRight(Ipv6Address.from("2001:db8::1234:5678"))
+    val roundtripped = expectRight(Ipv6Address.from(original.toBytes))
     assertEquals(roundtripped.highBits, original.highBits)
     assertEquals(roundtripped.lowBits, original.lowBits)
 
@@ -245,15 +234,15 @@ class Ipv6AddressSpec extends FunSuite:
 
   test("Ipv6Address.show compresses longest run of zeros"):
     // 2001:db8:0:0:0:0:0:1 should become 2001:db8::1
-    val addr = Ipv6Address.fromString("2001:db8:0:0:0:0:0:1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8:0:0:0:0:0:1"))
     assertEquals(addr.show, "2001:db8::1")
 
   test("Ipv6Address.show uses lowercase hex"):
-    val addr = Ipv6Address.fromString("ABCD::1234").get
+    val addr = expectRight(Ipv6Address.from("ABCD::1234"))
     assertEquals(addr.show, "abcd::1234")
 
   test("Ipv6Address.show does not pad groups"):
-    val addr = Ipv6Address.fromString("2001:0db8:0000:0001:0000:0000:0000:0001").get
+    val addr = expectRight(Ipv6Address.from("2001:0db8:0000:0001:0000:0000:0000:0001"))
     // Should not have leading zeros
     assert(!addr.show.contains("0db8"))
     assert(addr.show.contains("db8"))
@@ -261,13 +250,44 @@ class Ipv6AddressSpec extends FunSuite:
   test("Ipv6Address.show no compression for single zero group"):
     // If there's only one zero group, some implementations still compress
     // Our implementation compresses any run of zeros
-    val addr = Ipv6Address.fromString("2001:db8:0:1:2:3:4:5").get
+    val addr = expectRight(Ipv6Address.from("2001:db8:0:1:2:3:4:5"))
     // Either "2001:db8::1:2:3:4:5" or "2001:db8:0:1:2:3:4:5" is acceptable
     assert(addr.show.nonEmpty)
 
   test("Ipv6Address.show for all non-zero groups"):
     val addr = Ipv6Address.fromLongs(-1L, -1L)
     assertEquals(addr.show, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+
+  // ============================================================
+  // writeTo tests
+  // ============================================================
+
+  test("Ipv6Address.writeTo appends canonical form"):
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
+    val sb = new java.lang.StringBuilder("addr=")
+    val result = addr.writeTo(sb)
+    assertEquals(sb.toString, "addr=2001:db8::1")
+    assertEquals(result, sb)
+
+  // ============================================================
+  // literals interpolation tests
+  // ============================================================
+
+  test("ipv6 interpolator accepts mixed literal and values"):
+    import io.github.arashi01.emile.ipa.literals.*
+
+    val group = "db8"
+    val addr = ipv6"2001:${group}::1"
+    assertEquals(addr.show, "2001:db8::1")
+
+  test("ipv6 interpolator rejects invalid literal fragments"):
+    val errors = compileErrors(
+      """import io.github.arashi01.emile.ipa.literals.*
+
+val bad = ipv6"fe8g::${1}"
+"""
+    )
+    assert(errors.contains("Invalid IPv6 literal fragment"))
 
   // ============================================================
   // isLoopback tests (::1)
@@ -277,15 +297,15 @@ class Ipv6AddressSpec extends FunSuite:
     assert(Ipv6Address.Loopback.isLoopback)
 
   test("Ipv6Address.isLoopback from parsed ::1"):
-    val addr = Ipv6Address.fromString("::1").get
+    val addr = expectRight(Ipv6Address.from("::1"))
     assert(addr.isLoopback)
 
   test("Ipv6Address.isLoopback is false for ::2"):
-    val addr = Ipv6Address.fromString("::2").get
+    val addr = expectRight(Ipv6Address.from("::2"))
     assert(!addr.isLoopback)
 
   test("Ipv6Address.isLoopback is false for ::"):
-    val addr = Ipv6Address.fromString("::").get
+    val addr = expectRight(Ipv6Address.from("::"))
     assert(!addr.isLoopback)
 
   // ============================================================
@@ -293,19 +313,19 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.isLinkLocal for fe80::1"):
-    val addr = Ipv6Address.fromString("fe80::1").get
+    val addr = expectRight(Ipv6Address.from("fe80::1"))
     assert(addr.isLinkLocal)
 
   test("Ipv6Address.isLinkLocal for febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"):
-    val addr = Ipv6Address.fromString("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff").get
+    val addr = expectRight(Ipv6Address.from("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"))
     assert(addr.isLinkLocal)
 
   test("Ipv6Address.isLinkLocal boundary - fec0:: is NOT link-local"):
-    val addr = Ipv6Address.fromString("fec0::1").get
+    val addr = expectRight(Ipv6Address.from("fec0::1"))
     assert(!addr.isLinkLocal)
 
   test("Ipv6Address.isLinkLocal is false for global unicast"):
-    val addr = Ipv6Address.fromString("2001:db8::1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
     assert(!addr.isLinkLocal)
 
   // ============================================================
@@ -313,23 +333,23 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.isMulticast for ff02::1"):
-    val addr = Ipv6Address.fromString("ff02::1").get
+    val addr = expectRight(Ipv6Address.from("ff02::1"))
     assert(addr.isMulticast)
 
   test("Ipv6Address.isMulticast for ff00::"):
-    val addr = Ipv6Address.fromString("ff00::").get
+    val addr = expectRight(Ipv6Address.from("ff00::"))
     assert(addr.isMulticast)
 
   test("Ipv6Address.isMulticast for ffff::"):
-    val addr = Ipv6Address.fromString("ffff::").get
+    val addr = expectRight(Ipv6Address.from("ffff::"))
     assert(addr.isMulticast)
 
   test("Ipv6Address.isMulticast boundary - feff:: is NOT multicast"):
-    val addr = Ipv6Address.fromString("feff::").get
+    val addr = expectRight(Ipv6Address.from("feff::"))
     assert(!addr.isMulticast)
 
   test("Ipv6Address.isMulticast is false for unicast"):
-    val addr = Ipv6Address.fromString("2001:db8::1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
     assert(!addr.isMulticast)
 
   // ============================================================
@@ -340,7 +360,7 @@ class Ipv6AddressSpec extends FunSuite:
     assert(Ipv6Address.Wildcard.isWildcard)
 
   test("Ipv6Address.isWildcard from parsed ::"):
-    val addr = Ipv6Address.fromString("::").get
+    val addr = expectRight(Ipv6Address.from("::"))
     assert(addr.isWildcard)
 
   test("Ipv6Address.isWildcard is false for ::1"):
@@ -351,7 +371,7 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.isIpv4Mapped for mapped address"):
-    val ipv4 = Ipv4Address.fromString("192.168.1.1").get
+    val ipv4 = expectRight(Ipv4Address.from("192.168.1.1"))
     val ipv6 = Ipv6Address.fromIpv4Mapped(ipv4)
     assert(ipv6.isIpv4Mapped)
 
@@ -366,14 +386,14 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.toIpv4 extracts IPv4 from mapped address"):
-    val ipv4 = Ipv4Address.fromString("10.20.30.40").get
+    val ipv4 = expectRight(Ipv4Address.from("10.20.30.40"))
     val ipv6 = Ipv6Address.fromIpv4Mapped(ipv4)
     assertEquals(ipv6.toIpv4, Some(ipv4))
 
   test("Ipv6Address.toIpv4 returns None for non-mapped address"):
     assertEquals(Ipv6Address.Loopback.toIpv4, None)
     assertEquals(Ipv6Address.Wildcard.toIpv4, None)
-    assertEquals(Ipv6Address.fromString("2001:db8::1").get.toIpv4, None)
+    assertEquals(expectRight(Ipv6Address.from("2001:db8::1")).toIpv4, None)
 
   // ============================================================
   // Constants tests
@@ -392,13 +412,13 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address.Ordering compares correctly"):
-    val addr1 = Ipv6Address.fromString("::1").get
-    val addr2 = Ipv6Address.fromString("::2").get
+    val addr1 = expectRight(Ipv6Address.from("::1"))
+    val addr2 = expectRight(Ipv6Address.from("::2"))
     assert(Ordering[Ipv6Address].lt(addr1, addr2))
 
   test("Ipv6Address.Ordering treats high addresses as greater"):
-    val low = Ipv6Address.fromString("::1").get
-    val high = Ipv6Address.fromString("ffff::1").get
+    val low = expectRight(Ipv6Address.from("::1"))
+    val high = expectRight(Ipv6Address.from("ffff::1"))
     assert(Ordering[Ipv6Address].lt(low, high))
 
   test("Ipv6Address.Ordering compares high bits first"):
@@ -414,9 +434,9 @@ class Ipv6AddressSpec extends FunSuite:
 
   test("Ipv6Address.Ordering sorts list correctly"):
     val addrs = List(
-      Ipv6Address.fromString("2001:db8::1").get,
-      Ipv6Address.fromString("::1").get,
-      Ipv6Address.fromString("fe80::1").get
+      expectRight(Ipv6Address.from("2001:db8::1")),
+      expectRight(Ipv6Address.from("::1")),
+      expectRight(Ipv6Address.from("fe80::1"))
     )
     val sorted = addrs.sorted
     assertEquals(sorted(0).show, "::1")
@@ -429,20 +449,20 @@ class Ipv6AddressSpec extends FunSuite:
   // ============================================================
 
   test("Ipv6Address equality for same address"):
-    val a1 = Ipv6Address.fromString("2001:db8::1").get
-    val a2 = Ipv6Address.fromString("2001:db8::1").get
+    val a1 = expectRight(Ipv6Address.from("2001:db8::1"))
+    val a2 = expectRight(Ipv6Address.from("2001:db8::1"))
     assertEquals(a1.highBits, a2.highBits)
     assertEquals(a1.lowBits, a2.lowBits)
 
   test("Ipv6Address equality via different constructors"):
-    val fromString = Ipv6Address.fromString("::1").get
+    val fromString = expectRight(Ipv6Address.from("::1"))
     val fromLongs = Ipv6Address.fromLongs(0L, 1L)
     assertEquals(fromString.highBits, fromLongs.highBits)
     assertEquals(fromString.lowBits, fromLongs.lowBits)
 
   test("Ipv6Address inequality for different addresses"):
-    val a1 = Ipv6Address.fromString("::1").get
-    val a2 = Ipv6Address.fromString("::2").get
+    val a1 = expectRight(Ipv6Address.from("::1"))
+    val a2 = expectRight(Ipv6Address.from("::2"))
     assert(a1.lowBits != a2.lowBits)
 
 end Ipv6AddressSpec

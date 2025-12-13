@@ -35,6 +35,11 @@ trait Handle[H]:
     def close: Either[EmileError, Unit]
 
     /**
+     * Close the handle synchronously (no callback) with consistent semantics.
+     */
+    def closeSync: Either[EmileError, Unit]
+
+    /**
      * Check if handle is active.
      *
      * What "active" means depends on the handle type:
@@ -112,27 +117,31 @@ object Handle:
     extension (h: H)
       def close(callback: Either[EmileError, Unit] => Unit): Unit =
         val ptr = toPtr(h)
+        val loopPtr = LibUV.uv_handle_get_loop(ptr)
         if LibUV.uv_is_closing(ptr) != 0 then
           callback(Left(EmileError.AlreadyClosed))
         else
           // First, unregister any existing callback (e.g., async callback)
           val existingId = CallbackIdUtils.getCallbackId(ptr)
           if existingId != 0L then
-            val _ = CallbackRegistry.unregister(existingId)
+            val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
           // Now register the close callback and store its ID
-          val callbackId = CallbackRegistry.register(callback)
+          val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
           CallbackIdUtils.setCallbackId(ptr, callbackId)
           LibUV.uv_close(ptr, closeCallback)
 
       def close: Either[EmileError, Unit] =
+        closeSync
+
+      def closeSync: Either[EmileError, Unit] =
         val ptr = toPtr(h)
+        val loopPtr = LibUV.uv_handle_get_loop(ptr)
         if LibUV.uv_is_closing(ptr) != 0 then Left(EmileError.AlreadyClosed)
         else
-          // Unregister any existing callback before closing
           val existingId = CallbackIdUtils.getCallbackId(ptr)
           if existingId != 0L then
-            val _ = CallbackRegistry.unregister(existingId)
+            val _ = CallbackRegistry.unregister(loopPtr, existingId)
             CallbackIdUtils.clearCallbackId(ptr)
 
           LibUV.uv_close(ptr, nullCloseCallback)
@@ -163,9 +172,10 @@ object Handle:
 
   /** Close callback that invokes the stored Scala callback via registry, then frees memory. */
   private[emile] val closeCallback: LibUV.CloseCB = (handle: Ptr[Byte]) =>
+    val loopPtr = LibUV.uv_handle_get_loop(handle)
     val callbackId = CallbackIdUtils.getCallbackId(handle)
-    CallbackRegistry.findAs[Either[EmileError, Unit] => Unit](callbackId).foreach { callback =>
-      val _ = CallbackRegistry.unregister(callbackId)
+    CallbackRegistry.findAs[Either[EmileError, Unit] => Unit](loopPtr, callbackId).foreach { callback =>
+      val _ = CallbackRegistry.unregister(loopPtr, callbackId)
       CallbackIdUtils.clearCallbackId(handle)
       callback(Right(()))
     }
@@ -174,6 +184,11 @@ object Handle:
 
   /** Close callback that frees memory (for close without user callback). */
   private[emile] val nullCloseCallback: LibUV.CloseCB = (handle: Ptr[Byte]) =>
+    val loopPtr = LibUV.uv_handle_get_loop(handle)
+    val existingId = CallbackIdUtils.getCallbackId(handle)
+    if existingId != 0L then
+      val _ = CallbackRegistry.unregister(loopPtr, existingId)
+      CallbackIdUtils.clearCallbackId(handle)
     // Free the handle memory that was allocated with malloc
     free(handle)
 end Handle

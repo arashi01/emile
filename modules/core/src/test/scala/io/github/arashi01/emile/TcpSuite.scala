@@ -6,6 +6,7 @@ package io.github.arashi01.emile
 
 import munit.FunSuite
 import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Port}
+import scala.collection.mutable.ArrayBuffer
 
 /**
  * Tests for TCP handle operations.
@@ -20,10 +21,13 @@ import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Po
  */
 class TcpSuite extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
   // Helper to create SocketAddress.V4 from IP string and port
   private def addr(ip: String, port: Int): SocketAddress =
-    val ipv4 = Ipv4Address.parse(ip).toOption.get
-    val p = Port.fromInt(port).toOption.get
+    val ipv4 = expectRight(Ipv4Address.from(ip))
+    val p = expectRight(Port.from(port))
     SocketAddress.v4(ipv4, p)
 
   // Helper to extract port from SocketAddress
@@ -272,6 +276,68 @@ class TcpSuite extends FunSuite:
     assertEquals(received, "Hello, TCP!")
     assert(writeStatus.exists(_ >= 0), s"Write should succeed: $writeStatus")
 
+  test("Tcp.write handles large payload without truncation"):
+    val payloadSize = 64 * 1024 + 257 // ensure payload is larger than small buffer defaults
+    val payload = Array.tabulate[Byte](payloadSize)(i => (i % 256).toByte)
+
+    var serverRef: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
+    var clientRef: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
+    var timerRef: Timer[Open] = null.asInstanceOf[Timer[Open]]
+    var loopRef: Loop = null.asInstanceOf[Loop]
+    val receivedBuffer = ArrayBuffer.empty[Byte]
+    var writeStatus: Option[Int] = None
+    var serverPort: Int = 0
+    var receivedComplete = false
+
+    val result = for
+      loop <- Loop.create
+      _ = { loopRef = loop }
+      server <- Tcp.init(loop)
+      _ = { serverRef = server }
+      _ <- server.bind(addr("127.0.0.1", 0))
+      sockName <- server.getSocketName
+      _ = { serverPort = getPort(sockName) }
+      _ <- server.listen(128) { status =>
+        if status >= 0 then
+          val _ = (for
+            clientHandle <- Tcp.init(loopRef)
+            _ <- serverRef.accept(clientHandle)
+            _ <- clientHandle.readStart { dataResult =>
+              dataResult match
+                case Right(data) if data.nonEmpty && !receivedComplete =>
+                  receivedBuffer ++= data
+                  if receivedBuffer.length >= payloadSize then
+                    receivedComplete = true
+                    val _ = clientHandle.readStop
+                    val _ = clientHandle.close
+                    val _ = serverRef.close
+                case _ => ()
+            }
+          yield ()): Either[EmileError, Unit]
+      }
+      client <- Tcp.init(loop)
+      _ = { clientRef = client }
+      _ <- client.connect(addr("127.0.0.1", serverPort)) { status =>
+        if status >= 0 then
+          val _ = clientRef.write(payload) { wStatus =>
+            writeStatus = Some(wStatus)
+          }
+      }
+      timer <- Timer.after(loop, Duration.millis(500)) { () =>
+        if !clientRef.isClosing then { val _ = clientRef.close }
+        if !serverRef.isClosing then { val _ = serverRef.close }
+        val _ = timerRef.close
+      }
+      _ = { timerRef = timer }
+      _ <- loop.run(RunMode.Default)
+      _ <- loop.close
+    yield ()
+
+    assert(result.isRight, s"Test failed: $result")
+    assert(receivedComplete, s"Expected to receive ${payload.length} bytes, got ${receivedBuffer.length}")
+    assertEquals(receivedBuffer.take(payload.length).toSeq, payload.toSeq)
+    assert(writeStatus.exists(_ >= 0), s"Write should succeed: $writeStatus")
+
   test("Tcp.readStop stops reading"):
     var serverRef: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
     var clientRef: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
@@ -399,40 +465,42 @@ class TcpSuite extends FunSuite:
     assertEquals(getPort(sockAddr), 3000)
 
   test("SocketAddress with IPv6 loopback creates correct address"):
-    val ipv6 = Ipv6Address.parse("::1").toOption.get
-    val port = Port.fromInt(3000).toOption.get
+    val ipv6 = expectRight(Ipv6Address.from("::1"))
+    val port = expectRight(Port.from(3000))
     val sockAddr = SocketAddress.v6(ipv6, port)
     assertEquals(getHost(sockAddr), "::1")
     assertEquals(getPort(sockAddr), 3000)
 
   // Callback leak test - ensure restarting listen doesn't leak callbacks
   test("restarting listen does not leak callbacks"):
-    val initialSize = unsafe.CallbackRegistry.size
-    
     val result = for
       loop <- Loop.create
+      initialSize = unsafe.CallbackRegistry.size(loop.ptrUnsafe)
       tcp <- Tcp.init(loop)
       _ <- tcp.bind(addr("127.0.0.1", 0))
       // First listen
       _ <- tcp.listen(128) { _ => () }
-      sizeAfterFirst = unsafe.CallbackRegistry.size
+      sizeAfterFirst = unsafe.CallbackRegistry.size(loop.ptrUnsafe)
       // Second listen on same handle should replace callback
       _ <- tcp.listen(128) { _ => () }
-      sizeAfterSecond = unsafe.CallbackRegistry.size
+      sizeAfterSecond = unsafe.CallbackRegistry.size(loop.ptrUnsafe)
       // Should not have grown - old callback should be replaced
       _ = assertEquals(sizeAfterSecond, sizeAfterFirst, "Listen callback should be replaced, not added")
       _ = tcp.close
       _ <- loop.run(RunMode.Default)
       _ <- loop.close
-    yield ()
+    yield (initialSize, sizeAfterFirst, sizeAfterSecond)
 
     assert(result.isRight, s"Test failed: $result")
-    // After cleanup, should be back to initial size
-    assertEquals(unsafe.CallbackRegistry.size, initialSize)
+    result.foreach { case (initialSize, sizeAfterFirst, sizeAfterSecond) =>
+      assertEquals(sizeAfterFirst, initialSize + 1, "First listen should add one callback")
+      assertEquals(sizeAfterSecond, initialSize + 1, "Second listen should replace callback")
+    }
+    // After cleanup all registries should be cleared
+    assertEquals(unsafe.CallbackRegistry.totalSize, 0)
 
   // Callback leak test for connect
   test("multiple connects do not leak callbacks"):
-    val initialSize = unsafe.CallbackRegistry.size
     var clientRef1: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
     var clientRef2: Tcp[Open] = null.asInstanceOf[Tcp[Open]]
     var timerRef: Timer[Open] = null.asInstanceOf[Timer[Open]]
@@ -440,6 +508,7 @@ class TcpSuite extends FunSuite:
 
     val result = for
       loop <- Loop.create
+      initialSize = unsafe.CallbackRegistry.size(loop.ptrUnsafe)
       client1 <- Tcp.init(loop)
       _ = { clientRef1 = client1 }
       client2 <- Tcp.init(loop)
@@ -461,9 +530,12 @@ class TcpSuite extends FunSuite:
       _ = { timerRef = timer }
       _ <- loop.run(RunMode.Default)
       _ <- loop.close
-    yield ()
+    yield initialSize
 
     assert(result.isRight, s"Test failed: $result")
     assertEquals(connectCount, 2, "Both connect callbacks should have been called")
     // Callbacks should be cleaned up after connection completes
-    assertEquals(unsafe.CallbackRegistry.size, initialSize)
+    result.foreach { initialSize =>
+      assertEquals(unsafe.CallbackRegistry.totalSize, 0)
+      assertEquals(initialSize, 0)
+    }

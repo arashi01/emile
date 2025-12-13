@@ -29,17 +29,20 @@ import munit.FunSuite
  */
 class JsPlatformSpec extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
   // ============================================================
   // Basic verification that shared types work on JS
   // ============================================================
 
   test("Port works on JS platform"):
-    val port = Port.fromInt(8080).toOption.get
+    val port = expectRight(Port.from(8080))
     assertEquals(port.value, 8080)
     assertEquals(port.show, "8080")
 
   test("Ipv4Address works on JS platform"):
-    val addr = Ipv4Address.fromString("192.168.1.1").get
+    val addr = expectRight(Ipv4Address.from("192.168.1.1"))
     assertEquals(addr.show, "192.168.1.1")
     assertEquals(addr.octet1, 192)
     assertEquals(addr.octet2, 168)
@@ -47,11 +50,11 @@ class JsPlatformSpec extends FunSuite:
     assertEquals(addr.octet4, 1)
 
   test("Ipv6Address works on JS platform"):
-    val addr = Ipv6Address.fromString("2001:db8::1").get
+    val addr = expectRight(Ipv6Address.from("2001:db8::1"))
     assertEquals(addr.show, "2001:db8::1")
 
   test("SocketAddress works on JS platform"):
-    val addr = SocketAddress.localhost(Port.fromInt(3000).toOption.get)
+    val addr = SocketAddress.localhost(expectRight(Port.from(3000)))
     assertEquals(addr.show, "127.0.0.1:3000")
 
   test("String interpolators work on JS platform"):

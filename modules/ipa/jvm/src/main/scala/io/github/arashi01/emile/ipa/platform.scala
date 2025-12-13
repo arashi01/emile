@@ -21,6 +21,9 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
+private def expectRight[A](either: Either[AddressError, A]): A =
+  either.fold(err => throw new IllegalArgumentException(err.message), identity)
+
 /**
  * JVM platform extensions for IP address and socket address types.
  *
@@ -84,7 +87,7 @@ extension (addr: SocketAddress)
  */
 def fromInet4Address(inet: Inet4Address): Ipv4Address =
   val bytes = inet.getAddress.nn
-  Ipv4Address.fromBytes(bytes).get
+  expectRight(Ipv4Address.from(bytes))
 
 /**
  * Create an Ipv6Address from a java.net.Inet6Address.
@@ -96,7 +99,7 @@ def fromInet4Address(inet: Inet4Address): Ipv4Address =
  */
 def fromInet6Address(inet: Inet6Address): Ipv6Address =
   val bytes = inet.getAddress.nn
-  Ipv6Address.fromBytes(bytes).get
+  expectRight(Ipv6Address.from(bytes))
 
 /**
  * Create a SocketAddress from a java.net.InetSocketAddress.
@@ -107,7 +110,7 @@ def fromInet6Address(inet: Inet6Address): Ipv6Address =
  *   Either an error or the corresponding SocketAddress
  */
 def fromInetSocketAddress(inetSock: InetSocketAddress): Either[AddressError, SocketAddress] =
-  val port = Port.fromInt(inetSock.getPort)
+  val port = Port.from(inetSock.getPort)
   port.map { p =>
     inetSock.getAddress.nn match
       case inet4: Inet4Address =>

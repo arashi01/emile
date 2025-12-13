@@ -5,6 +5,8 @@
 package io.github.arashi01.emile
 
 import munit.FunSuite
+import io.github.arashi01.emile.Duration
+import io.github.arashi01.emile.Timer
 
 /**
  * Tests for Loop operations.
@@ -76,5 +78,24 @@ class LoopSuite extends FunSuite:
     yield runResult
 
     assert(result.isRight, s"Expected Right, got $result")
+
+  test("Loop.close on default loop is a no-op and loop stays usable"):
+    var fired = false
+    var timerRef: Timer[Open] = null.asInstanceOf[Timer[Open]]
+
+    val result = for
+      loop <- Loop.default
+      _ <- loop.close // should be a no-op for default loop
+      timer <- Timer.after(loop, Duration.millis(25)) { () =>
+        fired = true
+        val _ = timerRef.close
+      }
+      _ = { timerRef = timer }
+      _ <- loop.run(RunMode.Default)
+      _ <- loop.close
+    yield fired
+
+    assert(result.isRight, s"Expected Right, got $result")
+    assert(result.exists(identity), "Timer on default loop should fire even after close no-op")
 
 end LoopSuite

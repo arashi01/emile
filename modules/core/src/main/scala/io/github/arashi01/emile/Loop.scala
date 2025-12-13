@@ -6,7 +6,7 @@ package io.github.arashi01.emile
 
 import scala.scalanative.unsafe.*
 import scala.scalanative.libc.stdlib
-import io.github.arashi01.emile.unsafe.LibUV
+import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry}
 import io.github.arashi01.emile.unsafe.types.UvLoopPtr
 
 /**
@@ -183,13 +183,18 @@ object Loop:
       // Check if this is the default loop - don't free it as libuv owns it
       val defaultLoop = LibUV.uv_default_loop()
       val isDefault = loop == defaultLoop
-      
-      val result = LibUV.uv_loop_close(loop)
-      if result < 0 then Left(toSystemError(result))
-      else
-        // Only free if not the default loop
-        if !isDefault then stdlib.free(loop)
+
+      if isDefault then
+        // Do not close the default loop; clear any registry data to avoid leaks
+        CallbackRegistry.clear(loop)
         Right(())
+      else
+        val result = LibUV.uv_loop_close(loop)
+        if result < 0 then Left(toSystemError(result))
+        else
+          CallbackRegistry.clear(loop)
+          stdlib.free(loop)
+          Right(())
 
     /**
      * Walk all handles and initiate close on each.
