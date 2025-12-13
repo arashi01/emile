@@ -33,6 +33,8 @@ private[emile] object LibUV:
   type TimerCB = CFuncPtr1[Ptr[Byte], Unit]
   type AsyncCB = CFuncPtr1[Ptr[Byte], Unit]
   type PollCB = CFuncPtr3[Ptr[Byte], CInt, CInt, Unit]
+  type WorkCB = CFuncPtr1[Ptr[Byte], Unit]
+  type AfterWorkCB = CFuncPtr2[Ptr[Byte], CInt, Unit]
 
   // ==========================================================================
   // Loop functions
@@ -77,6 +79,12 @@ private[emile] object LibUV:
 
   /** Configure loop options. Second parameter is option-specific. */
   def uv_loop_configure(loop: Ptr[Byte], option: CInt, arg: CInt): CInt = extern
+
+  /** Get user data from loop. */
+  def uv_loop_get_data(loop: Ptr[Byte]): Ptr[Byte] = extern
+
+  /** Set user data on loop. */
+  def uv_loop_set_data(loop: Ptr[Byte], data: Ptr[Byte]): Unit = extern
 
   /** Get idle time metrics (requires UV_METRICS_IDLE_TIME to be enabled). */
   def uv_metrics_idle_time(loop: Ptr[Byte]): CUnsignedLongLong = extern
@@ -130,6 +138,12 @@ private[emile] object LibUV:
 
   /** Set user data on request. */
   def uv_req_set_data(req: Ptr[Byte], data: Ptr[Byte]): Unit = extern
+
+  /** Get request type for an existing request. */
+  def uv_req_get_type(req: Ptr[Byte]): CInt = extern
+
+  /** Queue work item on the threadpool. */
+  def uv_queue_work(loop: Ptr[Byte], req: Ptr[Byte], workCb: WorkCB, afterWorkCb: AfterWorkCB): CInt = extern
 
   // ==========================================================================
   // TCP functions

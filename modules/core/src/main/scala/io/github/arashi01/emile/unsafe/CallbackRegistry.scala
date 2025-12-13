@@ -5,8 +5,11 @@
 package io.github.arashi01.emile.unsafe
 
 import scala.annotation.internal.sharable
-import scala.collection.mutable.LongMap
+import scala.collection.mutable.{LongMap, Set as MutableSet}
 import scala.scalanative.unsafe.*
+import scala.scalanative.libc.stdlib
+import scala.scalanative.runtime.{fromRawPtr, toRawPtr}
+import scala.scalanative.runtime.Intrinsics.{castObjectToRawPtr, castRawPtrToObject}
 
 /**
  * Registry for mapping stable Long IDs to Scala callback objects.
@@ -50,104 +53,127 @@ import scala.scalanative.unsafe.*
  */
 @sharable
 private[emile] object CallbackRegistry:
-  /** Counter for generating unique callback IDs. Starts at 1 so 0 can be the sentinel. */
-  private var nextId: Long = 1L
+  private inline def uv = _root_.io.github.arashi01.emile.unsafe.LibUV
 
-  /** Map from stable IDs to callback objects. */
-  private val callbacks: LongMap[Any] = LongMap.empty
+  /** Native context stored on requests: (loopId, callbackId). */
+  private type RequestContext = CStruct2[Ptr[Byte], CLongLong]
 
-  /**
-   * Register a callback and return its stable ID.
-   *
-   * The returned ID can be safely stored in libuv's handle `data` field
-   * and later used to retrieve the callback.
-   *
-   * @param callback The callback object to register
-   * @return A stable Long ID for this callback
-   */
-  def register(callback: Any): Long =
-    val id = nextId
-    nextId += 1
-    val _ = callbacks.put(id, callback)
-    id
+  /** Per-loop registry state. */
+  private final class LoopRegistry(val loopPtr: Ptr[Byte], val salt: Long, var nextId: Long, val callbacks: LongMap[Any])
 
-  /**
-   * Retrieve a callback by its ID.
-   *
-   * @param id The callback ID returned from `register`
-   * @return The callback object, or throws if not found
-   */
-  def get(id: Long): Any =
-    callbacks.getOrElse(id, throw new NoSuchElementException(s"Callback not found: $id"))
+  /** Roots to keep registries GC-visible while loop is alive. */
+  private val registryRoots: MutableSet[LoopRegistry] = MutableSet.empty
 
-  /**
-   * Retrieve a callback by its ID with type casting.
-   *
-   * @tparam A The expected callback type
-   * @param id The callback ID returned from `register`
-   * @return The callback object cast to type A
-   */
-  def getAs[A](id: Long): A =
-    get(id).asInstanceOf[A]
+  /** Native pointers of active registries (fast membership check). */
+  private val registryPtrs: MutableSet[Ptr[Byte]] = MutableSet.empty
 
-  /**
-   * Retrieve a callback by its ID, returning None if not found.
-   *
-   * @param id The callback ID
-   * @return Some(callback) if found, None otherwise
-   */
-  def find(id: Long): Option[Any] =
-    callbacks.get(id)
+  /** Monotonic salt to namespace ids across loops. */
+  private var nextSalt: Long = 1L
 
-  /**
-   * Retrieve a callback by its ID with type casting, returning None if not found.
-   *
-   * @tparam A The expected callback type
-   * @param id The callback ID
-   * @return Some(callback) cast to type A if found, None otherwise
-   */
-  def findAs[A](id: Long): Option[A] =
-    callbacks.get(id).map(_.asInstanceOf[A])
+  private inline def registryPtr(registry: LoopRegistry): Ptr[Byte] =
+    fromRawPtr[Byte](castObjectToRawPtr(registry))
 
-  /**
-   * Unregister a callback, allowing it to be garbage collected.
-   *
-   * This should be called when a handle is closed to prevent memory leaks.
-   *
-   * @param id The callback ID to unregister
-   * @return true if the callback was found and removed, false otherwise
-   */
-  def unregister(id: Long): Boolean =
-    callbacks.remove(id).isDefined
+  private inline def fromRegistryPtr(ptr: Ptr[Byte]): Option[LoopRegistry] =
+    if ptr == null then None else Some(castRawPtrToObject(toRawPtr(ptr)).asInstanceOf[LoopRegistry])
 
-  /**
-   * Check if a callback ID is registered.
-   *
-   * @param id The callback ID to check
-   * @return true if registered, false otherwise
-   */
-  def contains(id: Long): Boolean =
-    callbacks.contains(id)
+  /** Obtain or create the registry for a loop pointer. */
+  private def registryFor(loopPtr: Ptr[Byte]): LoopRegistry =
+    registryRoots.synchronized {
+      val dataPtr = uv.uv_loop_get_data(loopPtr)
+      if dataPtr != null && registryPtrs.contains(dataPtr) then
+        fromRegistryPtr(dataPtr).get
+      else
+        val salt = nextSalt
+        nextSalt = if nextSalt == Long.MaxValue then 1L else nextSalt + 1L
+        val registry = LoopRegistry(loopPtr, salt, 1L, LongMap.empty[Any])
+        val ptr = registryPtr(registry)
+        registryRoots += registry
+        registryPtrs += ptr
+        uv.uv_loop_set_data(loopPtr, ptr)
+        registry
+    }
 
-  /**
-   * Get the number of registered callbacks.
-   *
-   * Useful for debugging and detecting callback leaks.
-   *
-   * @return The number of currently registered callbacks
-   */
-  def size: Int =
-    callbacks.size
+  /** Remove registry for loop and clear loop data to sentinel. */
+  def clear(loopPtr: Ptr[Byte]): Unit =
+    registryRoots.synchronized {
+      val dataPtr = uv.uv_loop_get_data(loopPtr)
+      if dataPtr != null && registryPtrs.contains(dataPtr) then
+        fromRegistryPtr(dataPtr).foreach { registry =>
+          val _ = registryRoots.remove(registry)
+          val _ = registryPtrs.remove(dataPtr)
+        }
+      uv.uv_loop_set_data(loopPtr, null.asInstanceOf[Ptr[Byte]])
+    }
 
-  /**
-   * Clear all registered callbacks.
-   *
-   * This is primarily for testing. In normal use, callbacks should be
-   * unregistered individually when handles are closed.
-   */
-  def clear(): Unit =
-    callbacks.clear()
-    nextId = 1L  // Reset to 1, not 0, to preserve sentinel invariant
+  /** Clear all registries (testing only). */
+  def clearAll(): Unit =
+    registryRoots.synchronized {
+      registryRoots.foreach { registry =>
+        uv.uv_loop_set_data(registry.loopPtr, null.asInstanceOf[Ptr[Byte]])
+      }
+      registryRoots.clear()
+      registryPtrs.clear()
+      nextSalt = 1L
+    }
+
+  /** Register a callback for the loop owning the handle. */
+  def register(handle: Ptr[Byte], callback: Any): Long =
+    registerLoop(uv.uv_handle_get_loop(handle), callback)
+
+  /** Register a callback for a loop pointer. */
+  def registerLoop(loopPtr: Ptr[Byte], callback: Any): Long =
+    val registry = registryFor(loopPtr)
+    registry.synchronized {
+      val localId = registry.nextId
+      registry.nextId = localId + 1
+      val id = (registry.salt << 32) | (localId & 0xFFFFFFFFL)
+      val _ = registry.callbacks.put(id, callback)
+      id
+    }
+
+  /** Find callback for loop/id. */
+  def find(loopPtr: Ptr[Byte], id: Long): Option[Any] =
+    if id == 0L then None
+    else
+      val registry = registryFor(loopPtr)
+      registry.callbacks.synchronized(registry.callbacks.get(id))
+
+  def findAs[A](loopPtr: Ptr[Byte], id: Long): Option[A] =
+    find(loopPtr, id).map(_.asInstanceOf[A])
+
+  /** Unregister callback for loop/id. */
+  def unregister(loopPtr: Ptr[Byte], id: Long): Boolean =
+    if id == 0L then false
+    else
+      val registry = registryFor(loopPtr)
+      registry.callbacks.synchronized(registry.callbacks.remove(id).isDefined)
+
+  /** Total callbacks in a loop. */
+  def size(loopPtr: Ptr[Byte]): Int =
+    val registry = registryFor(loopPtr)
+    registry.callbacks.synchronized(registry.callbacks.size)
+
+  /** Aggregate size across loops (diagnostics/testing). */
+  def totalSize: Int =
+    registryRoots.synchronized(registryRoots.toSeq.map(_.callbacks.size).sum)
+
+  /** Encode loop pointer + callback id for request data. */
+  def encodeRequest(loopPtr: Ptr[Byte], callbackId: Long): Ptr[Byte] =
+    val ctx = stdlib.malloc(sizeof[RequestContext]).asInstanceOf[Ptr[RequestContext]]
+    if ctx != null then
+      ctx._1 = loopPtr
+      ctx._2 = callbackId
+    ctx.asInstanceOf[Ptr[Byte]]
+
+  def requestLoopPtr(ctx: Ptr[Byte]): Ptr[Byte] =
+    if ctx == null then null.asInstanceOf[Ptr[Byte]]
+    else ctx.asInstanceOf[Ptr[RequestContext]]._1
+
+  def requestCallbackId(ctx: Ptr[Byte]): Long =
+    if ctx == null then 0L else ctx.asInstanceOf[Ptr[RequestContext]]._2.toLong
+
+  def freeRequest(ctx: Ptr[Byte]): Unit =
+    if ctx != null then stdlib.free(ctx)
 
 end CallbackRegistry
 
@@ -164,6 +190,7 @@ end CallbackRegistry
  * 3. On 64-bit systems, pointers and Long are both 64 bits
  */
 private[emile] object CallbackIdUtils:
+  private inline def uv = _root_.io.github.arashi01.emile.unsafe.LibUV
   import scala.scalanative.runtime.Intrinsics.{castLongToRawPtr, castRawPtrToLong}
   import scala.scalanative.runtime.{fromRawPtr, toRawPtr}
 
@@ -192,7 +219,7 @@ private[emile] object CallbackIdUtils:
    * @param id The callback ID to store
    */
   inline def setCallbackId(handle: Ptr[Byte], id: Long): Unit =
-    LibUV.uv_handle_set_data(handle, idToPtr(id))
+    uv.uv_handle_set_data(handle, idToPtr(id))
 
   /**
    * Get the callback ID from a libuv handle's data field.
@@ -203,7 +230,7 @@ private[emile] object CallbackIdUtils:
    * @return The stored callback ID
    */
   inline def getCallbackId(handle: Ptr[Byte]): Long =
-    ptrToId(LibUV.uv_handle_get_data(handle))
+    ptrToId(uv.uv_handle_get_data(handle))
 
   /**
    * Clear the callback ID from a libuv handle's data field.
@@ -211,6 +238,6 @@ private[emile] object CallbackIdUtils:
    * @param handle The handle pointer
    */
   inline def clearCallbackId(handle: Ptr[Byte]): Unit =
-    LibUV.uv_handle_set_data(handle, idToPtr(0L))
+    uv.uv_handle_set_data(handle, idToPtr(0L))
 
 end CallbackIdUtils

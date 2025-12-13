@@ -28,7 +28,7 @@ import scala.compiletime.error
  *
  * {{{
  * // From string (runtime validation)
- * val addr: Option[Ipv4Address] = Ipv4Address.fromString("192.168.1.1")
+ * val addr: Either[AddressError, Ipv4Address] = Ipv4Address.from("192.168.1.1")
  *
  * // From octets (compile-time validation for literals)
  * val localhost = Ipv4Address.fromOctets(127, 0, 0, 1)
@@ -64,30 +64,14 @@ object Ipv4Address:
   val Broadcast: Ipv4Address = 0xffffffff
 
   /**
-   * Parse an IPv4 address from dotted-decimal string.
-   *
-   * @param value
-   *   The string to parse (e.g., "192.168.1.1")
-   * @return
-   *   Some(Ipv4Address) if valid, None otherwise
-   */
-  def fromString(value: String): Option[Ipv4Address] =
-    parseIpv4(value).toOption
-
-  /**
    * Parse an IPv4 address from dotted-decimal string with error details.
-   *
-   * @param value
-   *   The string to parse (e.g., "192.168.1.1")
-   * @return
-   *   Either an error or the parsed address
    */
-  def parse(value: String): Either[AddressError, Ipv4Address] =
+  def from(value: String): Either[AddressError, Ipv4Address] =
     parseIpv4(value)
 
   private def parseIpv4(value: String): Either[AddressError, Ipv4Address] =
     if value == null || value.isEmpty then
-      Left(AddressError.InvalidIpv4(value, "empty input"))
+      Left(AddressError.InvalidIpv4(String.valueOf(value), "empty input"))
     else if value.startsWith(".") || value.endsWith(".") then
       Left(AddressError.InvalidIpv4(value, "leading or trailing dot"))
     else if value.contains("..") then
@@ -111,7 +95,7 @@ object Ipv4Address:
               (octets(3) & 0xff)
           )
         catch
-          case e: NumberFormatException =>
+          case _: NumberFormatException =>
             Left(AddressError.InvalidIpv4(value, "invalid octet format"))
           case e: IllegalArgumentException =>
             Left(AddressError.InvalidIpv4(value, e.getMessage.nn))
@@ -154,7 +138,7 @@ object Ipv4Address:
    * @return
    *   Either an error or the IPv4 address
    */
-  def fromOctetsRuntime(a: Int, b: Int, c: Int, d: Int): Either[AddressError, Ipv4Address] =
+  def from(a: Int, b: Int, c: Int, d: Int): Either[AddressError, Ipv4Address] =
     if a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255 then
       Left(AddressError.InvalidIpv4(s"$a.$b.$c.$d", "octets must be in range 0-255"))
     else Right(((a & 0xff) << 24) | ((b & 0xff) << 16) | ((c & 0xff) << 8) | (d & 0xff))
@@ -177,10 +161,10 @@ object Ipv4Address:
    * @return
    *   Some(Ipv4Address) if valid, None otherwise
    */
-  def fromBytes(bytes: Array[Byte]): Option[Ipv4Address] =
-    if bytes.length != 4 then None
+  def from(bytes: Array[Byte]): Either[AddressError, Ipv4Address] =
+    if bytes.length != 4 then Left(AddressError.InvalidIpv4("<bytes>", s"expected 4 bytes, got ${bytes.length}"))
     else
-      Some(
+      Right(
         ((bytes(0) & 0xff) << 24) |
           ((bytes(1) & 0xff) << 16) |
           ((bytes(2) & 0xff) << 8) |
@@ -207,8 +191,22 @@ object Ipv4Address:
     def toBytes: Array[Byte] =
       Array(octet1.toByte, octet2.toByte, octet3.toByte, octet4.toByte)
 
+    /** Append dotted-decimal representation to an Appendable. */
+    def writeTo[A <: Appendable](out: A): A =
+      appendDec(out, octet1)
+      out.append('.')
+      appendDec(out, octet2)
+      out.append('.')
+      appendDec(out, octet3)
+      out.append('.')
+      appendDec(out, octet4)
+      out
+
     /** Dotted-decimal string representation. */
-    def show: String = s"$octet1.$octet2.$octet3.$octet4"
+    def show: String =
+      val sb = new java.lang.StringBuilder
+      writeTo(sb): Unit
+      sb.toString
 
     /** True if this is a loopback address (127.x.x.x). */
     def isLoopback: Boolean = octet1 == 127
@@ -230,5 +228,9 @@ object Ipv4Address:
 
     /** True if this is the broadcast address (255.255.255.255). */
     def isBroadcast: Boolean = addr == 0xffffffff
+
+    private def appendDec(out: Appendable, value: Int): Unit =
+      out.append(java.lang.Integer.toString(value))
+      ()
 
 end Ipv4Address

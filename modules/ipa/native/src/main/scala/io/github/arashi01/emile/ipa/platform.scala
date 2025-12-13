@@ -114,7 +114,7 @@ extension (addr: Ipv6Address)
     sockaddr.sin6_family = AF_INET6.toUShort
     sockaddr.sin6_port = htons(port.value.toUShort)
     sockaddr.sin6_flowinfo = htonl(flowInfo.value.toUInt)
-    sockaddr.sin6_scope_id = htonl(scopeId.value.toUInt)
+    sockaddr.sin6_scope_id = scopeId.value.toUInt
     // Write the 16-byte address to sin6_addr field via raw pointer access
     val addrPtr = sockaddr.asInstanceOf[Ptr[Byte]] + SIN6_ADDR_OFFSET
     fillNetworkOrder(addrPtr)
@@ -165,7 +165,7 @@ def fromSockAddr(sockaddr: Ptr[sockaddr]): Either[AddressError, SocketAddress] =
     val sin     = sockaddr.asInstanceOf[Ptr[sockaddr_in]]
     val addrInt = ntohl(sin.sin_addr.s_addr).toInt
     val portInt = ntohs(sin.sin_port).toInt
-    Port.fromInt(portInt) match
+    Port.from(portInt) match
       case Right(port) =>
         Right(SocketAddress.v4(Ipv4Address.fromInt(addrInt), port))
       case Left(err) =>
@@ -186,8 +186,8 @@ def fromSockAddr(sockaddr: Ptr[sockaddr]): Either[AddressError, SocketAddress] =
       i += 1
     val portInt  = ntohs(sin6.sin6_port).toInt
     val flowInfo = FlowInfo(ntohl(sin6.sin6_flowinfo).toInt)
-    val scopeId  = ScopeId(ntohl(sin6.sin6_scope_id).toInt)
-    Port.fromInt(portInt) match
+    val scopeId  = ScopeId(sin6.sin6_scope_id.toInt)
+    Port.from(portInt) match
       case Right(port) =>
         Right(SocketAddress.v6(Ipv6Address.fromLongs(high, low), port, flowInfo, scopeId))
       case Left(err) =>

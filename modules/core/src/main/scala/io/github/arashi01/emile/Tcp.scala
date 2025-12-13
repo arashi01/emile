@@ -224,17 +224,18 @@ object Tcp:
      * @return Either an error or success
      */
     def listen(backlog: Int)(callback: Int => Unit): Either[EmileError, Unit] =
+      val loopPtr = LibUV.uv_handle_get_loop(tcp)
       // Unregister any existing callback
       val existingId = CallbackIdUtils.getCallbackId(tcp)
       if existingId != 0L then
-        val _ = CallbackRegistry.unregister(existingId)
+        val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
-      val callbackId = CallbackRegistry.register(callback)
+      val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
       CallbackIdUtils.setCallbackId(tcp, callbackId)
 
       val result = LibUV.uv_listen(tcp, backlog, connectionCallback)
       if result < 0 then
-        val _ = CallbackRegistry.unregister(callbackId)
+        val _ = CallbackRegistry.unregister(loopPtr, callbackId)
         CallbackIdUtils.clearCallbackId(tcp)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
@@ -266,21 +267,29 @@ object Tcp:
     def connect(address: SocketAddress)(callback: Int => Unit): Either[EmileError, Unit] =
       Zone:
         val sockaddr = address.toSockAddr
+        val loopPtr = LibUV.uv_handle_get_loop(tcp)
         val reqSize = LibUV.uv_req_size(UV_CONNECT)
         val req = malloc(reqSize)
         if req == null then Left(EmileError.OutOfMemory)
         else
           // Store callback in request's data field
-          val callbackId = CallbackRegistry.register(callback)
-          LibUV.uv_req_set_data(req, CallbackIdUtils.idToPtr(callbackId))
-
-          val result = LibUV.uv_tcp_connect(req, tcp, sockaddr.asInstanceOf[Ptr[Byte]], connectCallback)
-          if result < 0 then
-            val _ = CallbackRegistry.unregister(callbackId)
+          val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
+          val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
+          if ctx == null then
+            val _ = CallbackRegistry.unregister(loopPtr, callbackId)
             free(req)
-            Left(EmileError.fromErrorCode(ErrorCode(result)))
+            Left(EmileError.OutOfMemory)
           else
-            Right(())
+            LibUV.uv_req_set_data(req, ctx)
+
+            val result = LibUV.uv_tcp_connect(req, tcp, sockaddr.asInstanceOf[Ptr[Byte]], connectCallback)
+            if result < 0 then
+              val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+              CallbackRegistry.freeRequest(ctx)
+              free(req)
+              Left(EmileError.fromErrorCode(ErrorCode(result)))
+            else
+              Right(())
 
     /**
      * Start reading data from the connection.
@@ -292,17 +301,18 @@ object Tcp:
      * @return Either an error or success
      */
     def readStart(callback: Either[EmileError, Array[Byte]] => Unit): Either[EmileError, Unit] =
+      val loopPtr = LibUV.uv_handle_get_loop(tcp)
       // Store read callback
       val existingId = CallbackIdUtils.getCallbackId(tcp)
       if existingId != 0L then
-        val _ = CallbackRegistry.unregister(existingId)
+        val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
-      val callbackId = CallbackRegistry.register(callback)
+      val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
       CallbackIdUtils.setCallbackId(tcp, callbackId)
 
       val result = LibUV.uv_read_start(tcp, allocCallback, readCallback)
       if result < 0 then
-        val _ = CallbackRegistry.unregister(callbackId)
+        val _ = CallbackRegistry.unregister(loopPtr, callbackId)
         CallbackIdUtils.clearCallbackId(tcp)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
@@ -319,7 +329,8 @@ object Tcp:
       else
         val callbackId = CallbackIdUtils.getCallbackId(tcp)
         if callbackId != 0L then
-          val _ = CallbackRegistry.unregister(callbackId)
+          val loopPtr = LibUV.uv_handle_get_loop(tcp)
+          val _ = CallbackRegistry.unregister(loopPtr, callbackId)
           CallbackIdUtils.clearCallbackId(tcp)
         Right(())
 
@@ -337,6 +348,7 @@ object Tcp:
         val req = malloc(reqSize)
         if req == null then Left(EmileError.OutOfMemory)
         else
+          val loopPtr = LibUV.uv_handle_get_loop(tcp)
           // Allocate buffer for the data
           val dataPtr = malloc(data.length.toCSize)
           if dataPtr == null then
@@ -349,25 +361,27 @@ object Tcp:
               !(dataPtr + i) = data(i)
               i += 1
 
-            // Create uv_buf_t - we need to allocate it too
-            val buf = malloc(16.toCSize).asInstanceOf[Ptr[LibUV.Buffer]] // CStruct2[Ptr[Byte], CSize]
-            if buf == null then
+            // uv_write copies uv_buf_t contents, so stack allocation is safe; dataPtr must live until callback
+            val buf = stackalloc[LibUV.Buffer](1)
+            buf._1 = dataPtr
+            buf._2 = data.length.toCSize
+
+            // Store callback and cleanup info in request
+            val writeData = (callback, dataPtr)
+            val callbackId = CallbackRegistry.registerLoop(loopPtr, writeData)
+            val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
+            if ctx == null then
+              val _ = CallbackRegistry.unregister(loopPtr, callbackId)
               free(dataPtr)
               free(req)
               Left(EmileError.OutOfMemory)
             else
-              buf._1 = dataPtr
-              buf._2 = data.length.toCSize
-
-              // Store callback and cleanup info in request
-              val writeData = (callback, dataPtr, buf)
-              val callbackId = CallbackRegistry.register(writeData)
-              LibUV.uv_req_set_data(req, CallbackIdUtils.idToPtr(callbackId))
+              LibUV.uv_req_set_data(req, ctx)
 
               val result = LibUV.uv_write(req, tcp, buf, 1.toUInt, writeCallback)
               if result < 0 then
-                val _ = CallbackRegistry.unregister(callbackId)
-                free(buf.asInstanceOf[Ptr[Byte]])
+                val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+                CallbackRegistry.freeRequest(ctx)
                 free(dataPtr)
                 free(req)
                 Left(EmileError.fromErrorCode(ErrorCode(result)))
@@ -397,16 +411,24 @@ object Tcp:
       val req = malloc(reqSize)
       if req == null then Left(EmileError.OutOfMemory)
       else
-        val callbackId = CallbackRegistry.register(callback)
-        LibUV.uv_req_set_data(req, CallbackIdUtils.idToPtr(callbackId))
-
-        val result = LibUV.uv_shutdown(req, tcp, shutdownCallback)
-        if result < 0 then
-          val _ = CallbackRegistry.unregister(callbackId)
+        val loopPtr = LibUV.uv_handle_get_loop(tcp)
+        val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
+        val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
+        if ctx == null then
+          val _ = CallbackRegistry.unregister(loopPtr, callbackId)
           free(req)
-          Left(EmileError.fromErrorCode(ErrorCode(result)))
+          Left(EmileError.OutOfMemory)
         else
-          Right(())
+          LibUV.uv_req_set_data(req, ctx)
+
+          val result = LibUV.uv_shutdown(req, tcp, shutdownCallback)
+          if result < 0 then
+            val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+            CallbackRegistry.freeRequest(ctx)
+            free(req)
+            Left(EmileError.fromErrorCode(ErrorCode(result)))
+          else
+            Right(())
 
     /**
      * Enable/disable TCP_NODELAY (disable Nagle's algorithm).
@@ -488,18 +510,6 @@ object Tcp:
       LibUV.uv_is_writable(tcp) != 0
 
     /**
-     * Close the TCP handle synchronously.
-     *
-     * This initiates the close sequence without a callback.
-     * Returns a Tcp[Closed] witness proving the handle was closed.
-     *
-     * @return Either an error or the closed handle
-     */
-    def closeSync: Either[EmileError, Tcp[Closed]] =
-      LibUV.uv_close(tcp, Handle.nullCloseCallback)
-      Right(tcp.asInstanceOf[Tcp[Closed]])
-
-    /**
      * Close the TCP handle asynchronously with a callback.
      *
      * The callback is invoked when the handle has been fully closed.
@@ -511,13 +521,14 @@ object Tcp:
       if LibUV.uv_is_closing(tcp) != 0 then
         callback(Left(EmileError.AlreadyClosed))
       else
+        val loopPtr = LibUV.uv_handle_get_loop(tcp)
         // First, unregister any existing callback
         val existingId = CallbackIdUtils.getCallbackId(tcp)
         if existingId != 0L then
-          val _ = CallbackRegistry.unregister(existingId)
+          val _ = CallbackRegistry.unregister(loopPtr, existingId)
 
         // Now register the close callback and store its ID
-        val callbackId = CallbackRegistry.register(callback)
+        val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
         CallbackIdUtils.setCallbackId(tcp, callbackId)
         LibUV.uv_close(tcp, Handle.closeCallback)
 
@@ -527,18 +538,22 @@ object Tcp:
 
   /** Connection callback for listen. */
   private val connectionCallback: LibUV.ConnectionCB = (server: Ptr[Byte], status: CInt) =>
+    val loopPtr = LibUV.uv_handle_get_loop(server)
     val callbackId = CallbackIdUtils.getCallbackId(server)
-    CallbackRegistry.findAs[Int => Unit](callbackId).foreach { callback =>
+    CallbackRegistry.findAs[Int => Unit](loopPtr, callbackId).foreach { callback =>
       callback(status)
     }
 
   /** Connect callback. */
   private val connectCallback: LibUV.ConnectCB = (req: Ptr[Byte], status: CInt) =>
-    val callbackId = CallbackIdUtils.ptrToId(LibUV.uv_req_get_data(req))
-    CallbackRegistry.findAs[Int => Unit](callbackId).foreach { callback =>
-      val _ = CallbackRegistry.unregister(callbackId)
+    val ctx = LibUV.uv_req_get_data(req)
+    val loopPtr = CallbackRegistry.requestLoopPtr(ctx)
+    val callbackId = CallbackRegistry.requestCallbackId(ctx)
+    CallbackRegistry.findAs[Int => Unit](loopPtr, callbackId).foreach { callback =>
+      val _ = CallbackRegistry.unregister(loopPtr, callbackId)
       callback(status)
     }
+    CallbackRegistry.freeRequest(ctx)
     free(req)
 
   /** Allocation callback for read. */
@@ -550,8 +565,9 @@ object Tcp:
 
   /** Read callback. */
   private val readCallback: LibUV.ReadCB = (stream: Ptr[Byte], nread: CSSize, buf: Ptr[LibUV.Buffer]) =>
+    val loopPtr = LibUV.uv_handle_get_loop(stream)
     val callbackId = CallbackIdUtils.getCallbackId(stream)
-    CallbackRegistry.findAs[Either[EmileError, Array[Byte]] => Unit](callbackId).foreach { callback =>
+    CallbackRegistry.findAs[Either[EmileError, Array[Byte]] => Unit](loopPtr, callbackId).foreach { callback =>
       if nread > 0 then
         // Got data
         val data = new Array[Byte](nread.toInt)
@@ -577,23 +593,28 @@ object Tcp:
 
   /** Write callback. */
   private val writeCallback: LibUV.WriteCB = (req: Ptr[Byte], status: CInt) =>
-    val callbackId = CallbackIdUtils.ptrToId(LibUV.uv_req_get_data(req))
-    CallbackRegistry.findAs[(Int => Unit, Ptr[Byte], Ptr[LibUV.Buffer])](callbackId).foreach {
-      case (callback, dataPtr, buf) =>
-        val _ = CallbackRegistry.unregister(callbackId)
-        free(buf.asInstanceOf[Ptr[Byte]])
+    val ctx = LibUV.uv_req_get_data(req)
+    val loopPtr = CallbackRegistry.requestLoopPtr(ctx)
+    val callbackId = CallbackRegistry.requestCallbackId(ctx)
+    CallbackRegistry.findAs[(Int => Unit, Ptr[Byte])](loopPtr, callbackId).foreach {
+      case (callback, dataPtr) =>
+        val _ = CallbackRegistry.unregister(loopPtr, callbackId)
         free(dataPtr)
         callback(status)
     }
+    CallbackRegistry.freeRequest(ctx)
     free(req)
 
   /** Shutdown callback. */
   private val shutdownCallback: LibUV.ShutdownCB = (req: Ptr[Byte], status: CInt) =>
-    val callbackId = CallbackIdUtils.ptrToId(LibUV.uv_req_get_data(req))
-    CallbackRegistry.findAs[Int => Unit](callbackId).foreach { callback =>
-      val _ = CallbackRegistry.unregister(callbackId)
+    val ctx = LibUV.uv_req_get_data(req)
+    val loopPtr = CallbackRegistry.requestLoopPtr(ctx)
+    val callbackId = CallbackRegistry.requestCallbackId(ctx)
+    CallbackRegistry.findAs[Int => Unit](loopPtr, callbackId).foreach { callback =>
+      val _ = CallbackRegistry.unregister(loopPtr, callbackId)
       callback(status)
     }
+    CallbackRegistry.freeRequest(ctx)
     free(req)
 
 end Tcp

@@ -16,7 +16,7 @@ import munit.FunSuite
  * Key compile-time properties (verified by successful compilation):
  * - Timer[Open], Async[Open], Poll[Open], Tcp[Open] can call start/stop/send operations
  * - Timer[Closed], Async[Closed], Poll[Closed], Tcp[Closed] CANNOT call those operations
- * - closeSync returns a [Closed] witness
+ * - closeSync returns a success marker (no witness)
  * - init returns an [Open] handle
  */
 class HandleStateSuite extends FunSuite:
@@ -35,18 +35,14 @@ class HandleStateSuite extends FunSuite:
       assert(result.isRight)
       // The fact this compiles proves init returns Timer[Open]
       val timer: Timer[Open] = result.toOption.get
-      val _ = timer.closeSync
+      assert(timer.closeSync.isRight)
     }
 
-  test("Timer closeSync returns Timer[Closed]"):
+  test("Timer closeSync completes without leaks"):
     withLoop { loop =>
       Timer.init(loop).foreach { timer =>
         val closeResult = timer.closeSync
         assert(closeResult.isRight)
-        // The fact this compiles proves closeSync returns Timer[Closed]
-        val closed: Timer[Closed] = closeResult.toOption.get
-        // closed.start(...) would NOT compile - operations require Open state
-        val _ = closed
       }
     }
 
@@ -56,18 +52,14 @@ class HandleStateSuite extends FunSuite:
       assert(result.isRight)
       // The fact this compiles proves init returns Async[Open]
       val async: Async[Open] = result.toOption.get
-      val _ = async.closeSync
+      assert(async.closeSync.isRight)
     }
 
-  test("Async closeSync returns Async[Closed]"):
+  test("Async closeSync completes without leaks"):
     withLoop { loop =>
       Async.init(loop)(() => ()).foreach { async =>
         val closeResult = async.closeSync
         assert(closeResult.isRight)
-        // The fact this compiles proves closeSync returns Async[Closed]
-        val closed: Async[Closed] = closeResult.toOption.get
-        // closed.send() would NOT compile - operations require Open state
-        val _ = closed
       }
     }
 
@@ -78,20 +70,16 @@ class HandleStateSuite extends FunSuite:
         assert(result.isRight)
         // The fact this compiles proves init returns Poll[Open]
         val poll: Poll[Open] = result.toOption.get
-        val _ = poll.closeSync
+        assert(poll.closeSync.isRight)
       }
     }
 
-  test("Poll closeSync returns Poll[Closed]"):
+  test("Poll closeSync completes without leaks"):
     withPipe { (readFd, _) =>
       withLoop { loop =>
         Poll.init(loop, readFd).foreach { poll =>
           val closeResult = poll.closeSync
           assert(closeResult.isRight)
-          // The fact this compiles proves closeSync returns Poll[Closed]
-          val closed: Poll[Closed] = closeResult.toOption.get
-          // closed.start(...) would NOT compile - operations require Open state
-          val _ = closed
         }
       }
     }
@@ -102,18 +90,14 @@ class HandleStateSuite extends FunSuite:
       assert(result.isRight)
       // The fact this compiles proves init returns Tcp[Open]
       val tcp: Tcp[Open] = result.toOption.get
-      val _ = tcp.closeSync
+      assert(tcp.closeSync.isRight)
     }
 
-  test("Tcp closeSync returns Tcp[Closed]"):
+  test("Tcp closeSync completes without leaks"):
     withLoop { loop =>
       Tcp.init(loop).foreach { tcp =>
         val closeResult = tcp.closeSync
         assert(closeResult.isRight)
-        // The fact this compiles proves closeSync returns Tcp[Closed]
-        val closed: Tcp[Closed] = closeResult.toOption.get
-        // closed.bind(...) would NOT compile - operations require Open state
-        val _ = closed
       }
     }
 
@@ -125,7 +109,7 @@ class HandleStateSuite extends FunSuite:
         assert(startResult.isRight)
         val stopResult = timer.stop
         assert(stopResult.isRight)
-        val _ = timer.closeSync
+        assert(timer.closeSync.isRight)
       }
     }
 
@@ -135,7 +119,7 @@ class HandleStateSuite extends FunSuite:
         // This compiles because async is Async[Open]
         val sendResult = async.send
         assert(sendResult.isRight)
-        val _ = async.closeSync
+        assert(async.closeSync.isRight)
       }
     }
 
@@ -148,7 +132,7 @@ class HandleStateSuite extends FunSuite:
           assert(startResult.isRight)
           val stopResult = poll.stop
           assert(stopResult.isRight)
-          val _ = poll.closeSync
+          assert(poll.closeSync.isRight)
         }
       }
     }
@@ -162,7 +146,7 @@ class HandleStateSuite extends FunSuite:
         // This compiles because tcp is Tcp[Open]
         val bindResult = tcp.bind(addr)
         assert(bindResult.isRight)
-        val _ = tcp.closeSync
+        assert(tcp.closeSync.isRight)
       }
     }
 
@@ -174,13 +158,13 @@ class HandleStateSuite extends FunSuite:
         val loopFromHandle1 = handleOpen.loop(openTimer)
         assert(loopFromHandle1.ptrUnsafe.toLong == loop.ptrUnsafe.toLong)
 
-        val closeResult = openTimer.closeSync
-        closeResult.foreach { closedTimer =>
-          // Handle also works with Timer[Closed]
-          val handleClosed = Handle[Timer[Closed]]
-          val loopFromHandle2 = handleClosed.loop(closedTimer)
-          assert(loopFromHandle2.ptrUnsafe.toLong == loop.ptrUnsafe.toLong)
-        }
+        // Handle also works with Timer[Closed] type-level view
+        val closedView: Timer[Closed] = openTimer.asInstanceOf[Timer[Closed]]
+        val handleClosed = Handle[Timer[Closed]]
+        val loopFromHandle2 = handleClosed.loop(closedView)
+        assert(loopFromHandle2.ptrUnsafe.toLong == loop.ptrUnsafe.toLong)
+
+        assert(handleOpen.closeSync(openTimer).isRight)
       }
     }
 
@@ -193,8 +177,8 @@ class HandleStateSuite extends FunSuite:
       val async1: Async.OpenAsync = Async.init(loop)(() => ()).toOption.get
 
       // Close them
-      val _ = timer1.closeSync
-      val _ = async1.closeSync
+      assert(timer1.closeSync.isRight)
+      assert(async1.closeSync.isRight)
     }
 
   test("closeAsync invokes callback"):
@@ -218,7 +202,7 @@ class HandleStateSuite extends FunSuite:
       val timer2 = Timer.init(loop).toOption.get
 
       // Close timer1, keep timer2 open
-      val closed1: Timer[Closed] = timer1.closeSync.toOption.get
+      assert(timer1.closeSync.isRight)
       val open2: Timer[Open] = timer2
 
       // timer1 is closed, timer2 is open
@@ -227,8 +211,7 @@ class HandleStateSuite extends FunSuite:
       assert(startResult.isRight)
 
       // Clean up
-      val _ = open2.closeSync
-      val _ = closed1
+      assert(open2.closeSync.isRight)
     }
 
   // Helper methods

@@ -6,6 +6,8 @@ package io.github.arashi01.emile
 
 import scala.scalanative.unsafe.*
 import scala.scalanative.libc.stdlib
+import scala.scalanative.runtime.{fromRawPtr, toRawPtr}
+import scala.scalanative.runtime.Intrinsics.{castObjectToRawPtr, castRawPtrToObject}
 import io.github.arashi01.emile.unsafe.LibUV
 import io.github.arashi01.emile.unsafe.types.UvAsyncPtr
 
@@ -21,11 +23,8 @@ object PollResult:
   /** All available ready events were polled. */
   case object Complete extends PollResult
 
-  /**
-   * Some but not all ready events were polled.
-   * Poll should be called again to reap additional events.
-   */
-  case object Incomplete extends PollResult
+  /** No active handles/requests; loop is idle. */
+  case object Idle extends PollResult
 
   /**
    * Poll was interrupted or timed out before any events became ready.
@@ -131,6 +130,14 @@ trait Poller:
   def interrupt(): Unit
 
   /**
+   * Request the loop to stop on the next iteration.
+   *
+   * This mirrors libuv's `uv_stop` behaviour and is treated as an
+   * interruption in poll semantics.
+   */
+  def stop(): Unit
+
+  /**
    * Close the poller and release all resources.
    *
    * This:
@@ -188,6 +195,9 @@ object Poller:
     // Interrupt flag - set by interrupt(), cleared by poll()
     @volatile private var interrupted: Boolean = false
 
+    // Stop flag - set by stop(), cleared by poll()
+    @volatile private var stopRequested: Boolean = false
+
     // Closed flag
     @volatile private var closed: Boolean = false
 
@@ -197,6 +207,10 @@ object Poller:
       // Check interrupt flag before potentially blocking
       if interrupted then
         interrupted = false
+        return PollResult.Interrupted
+
+      if stopRequested then
+        stopRequested = false
         return PollResult.Interrupted
 
       val result = nanos match
@@ -219,18 +233,21 @@ object Poller:
           // Invalid timeout - treat as non-blocking
           LibUV.uv_run(loop.ptrUnsafe, RunMode.NoWait.toLibuv)
 
-      // Check interrupt flag after poll
+      // Check interrupt/stop flags after poll
       if interrupted then
         interrupted = false
         PollResult.Interrupted
+      else if stopRequested then
+        stopRequested = false
+        PollResult.Interrupted
       else if result != 0 then
-        // Non-zero means loop is still alive (has active handles/requests)
-        // Since libuv processes all ready events in one uv_run call,
-        // we report Complete (all ready events processed)
+        // libuv: uv_run returns non-zero when there are active handles/requests
+        // remaining after the run (docs: uv_run @ include/uv.h). Treat as
+        // Complete so callers can keep polling while the loop is alive.
         PollResult.Complete
       else
-        // Loop has no more active handles - nothing to poll
-        PollResult.Interrupted
+        // Loop has no more active handles or requests
+        PollResult.Idle
     end poll
 
     override def processReadyEvents(): Boolean =
@@ -245,14 +262,15 @@ object Poller:
 
     override def interrupt(): Unit =
       if !closed then
-        // Set flag first - poll() will check this
-        interrupted = true
-
-        // Send async signal to wake up the loop
-        // This is thread-safe (uv_async_send is documented as such)
+        // Send async signal to wake up the loop; async callback sets flags
         val handle = ensureAsyncHandle()
         if handle != UvAsyncPtr.Null then
           val _ = LibUV.uv_async_send(handle.ptr)
+
+    override def stop(): Unit =
+      if !closed then
+        stopRequested = true
+        LibUV.uv_stop(loop.ptrUnsafe)
 
     override def close(): Unit =
       if !closed then
@@ -290,19 +308,33 @@ object Poller:
       val ptr = stdlib.calloc(1L, size.toLong)
       if ptr == null then return UvAsyncPtr.Null
 
-      // The callback does nothing - we use the interrupted flag
       val result = LibUV.uv_async_init(loop.ptrUnsafe, ptr, asyncCallback)
       if result < 0 then
         stdlib.free(ptr)
         UvAsyncPtr.Null
       else
+        // Store PollerImpl reference in handle data for callback access
+        LibUV.uv_handle_set_data(ptr, fromRawPtr[Byte](castObjectToRawPtr(this)))
         UvAsyncPtr(ptr)
+
+    /** Invoked on the loop thread when async wake fires. */
+    private[Poller] def onAsyncWake(): Unit =
+      // Mark as interrupted and request stop so uv_run returns promptly
+      interrupted = true
+      stopRequested = true
+      LibUV.uv_stop(loop.ptrUnsafe)
   end PollerImpl
 
-  // Async callback - just wakes up the loop, actual handling via interrupted flag
-  private val asyncCallback: LibUV.AsyncCB = (_: Ptr[Byte]) => ()
+  // Async callback - retrieve PollerImpl from handle data and signal stop
+  private val asyncCallback: LibUV.AsyncCB = (handle: Ptr[Byte]) =>
+    val dataPtr = LibUV.uv_handle_get_data(handle)
+    if dataPtr != null then
+      val poller = castRawPtrToObject(toRawPtr(dataPtr)).asInstanceOf[PollerImpl]
+      poller.onAsyncWake()
 
   // Close callback - frees the async handle memory
   private val closeCallback: LibUV.CloseCB = (handle: Ptr[Byte]) =>
+    // Clear data to avoid pinning the PollerImpl
+    LibUV.uv_handle_set_data(handle, null.asInstanceOf[Ptr[Byte]])
     stdlib.free(handle)
 end Poller

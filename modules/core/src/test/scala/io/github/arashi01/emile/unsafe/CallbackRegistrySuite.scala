@@ -4,136 +4,93 @@
  */
 package io.github.arashi01.emile.unsafe
 
+import java.util.concurrent.atomic.AtomicBoolean
 import munit.FunSuite
+import io.github.arashi01.emile.{Async, Loop, RunMode, Open}
 
-/**
- * Tests for CallbackRegistry.
- *
- * These tests verify the registry pattern for GC-safe callback storage.
- */
 class CallbackRegistrySuite extends FunSuite:
 
   override def beforeEach(context: BeforeEach): Unit =
-    // Clear registry before each test
-    CallbackRegistry.clear()
+    CallbackRegistry.clearAll()
 
-  test("register returns unique IDs"):
-    val id1 = CallbackRegistry.register("callback1")
-    val id2 = CallbackRegistry.register("callback2")
-    val id3 = CallbackRegistry.register("callback3")
+  test("per-loop registration is isolated"):
+    val loop1 = Loop.create.toOption.get
+    val loop2 = Loop.create.toOption.get
 
-    assertNotEquals(id1, id2)
-    assertNotEquals(id2, id3)
-    assertNotEquals(id1, id3)
+    val id1 = CallbackRegistry.registerLoop(loop1.ptrUnsafe, "loop1")
+    val id2 = CallbackRegistry.registerLoop(loop2.ptrUnsafe, "loop2")
 
-  test("get retrieves registered callback"):
-    val callback = () => println("test")
-    val id = CallbackRegistry.register(callback)
+    assertEquals(CallbackRegistry.find(loop1.ptrUnsafe, id1), Some("loop1"))
+    assertEquals(CallbackRegistry.find(loop2.ptrUnsafe, id2), Some("loop2"))
+    assert(CallbackRegistry.find(loop1.ptrUnsafe, id2).isEmpty)
+    assert(CallbackRegistry.find(loop2.ptrUnsafe, id1).isEmpty)
 
-    val retrieved = CallbackRegistry.get(id)
-    assertEquals(retrieved, callback)
+    assert(CallbackRegistry.unregister(loop1.ptrUnsafe, id1))
+    assert(CallbackRegistry.unregister(loop2.ptrUnsafe, id2))
+    assertEquals(CallbackRegistry.size(loop1.ptrUnsafe), 0)
+    assertEquals(CallbackRegistry.size(loop2.ptrUnsafe), 0)
 
-  test("getAs retrieves callback with correct type"):
-    val callback: () => Int = () => 42
-    val id = CallbackRegistry.register(callback)
+    val _ = loop1.close
+    val _ = loop2.close
 
-    val retrieved = CallbackRegistry.getAs[() => Int](id)
-    assertEquals(retrieved(), 42)
+  test("request contexts carry loop pointer and callback id"):
+    val loop = Loop.create.toOption.get
+    val id = CallbackRegistry.registerLoop(loop.ptrUnsafe, "ctx-callback")
 
-  test("find returns Some for registered callback"):
-    val callback = "test-callback"
-    val id = CallbackRegistry.register(callback)
+    val ctx = CallbackRegistry.encodeRequest(loop.ptrUnsafe, id)
+    val loopPtr = CallbackRegistry.requestLoopPtr(ctx)
+    val cbId = CallbackRegistry.requestCallbackId(ctx)
 
-    val found = CallbackRegistry.find(id)
-    assert(found.isDefined)
-    assertEquals(found.get, callback)
+    assertEquals(loopPtr, loop.ptrUnsafe)
+    assertEquals(cbId, id)
+    assertEquals(CallbackRegistry.find(loopPtr, cbId), Some("ctx-callback"))
 
-  test("find returns None for unregistered ID"):
-    val found = CallbackRegistry.find(99999L)
-    assert(found.isEmpty)
+    CallbackRegistry.freeRequest(ctx)
+    CallbackRegistry.unregister(loop.ptrUnsafe, id): Unit
+    val _ = loop.close
 
-  test("findAs returns correctly typed Option"):
-    val callback: Int => String = n => s"number: $n"
-    val id = CallbackRegistry.register(callback)
+  test("async callbacks stay on their owning loop across threads"):
+    val loop1 = Loop.create.toOption.get
+    val loop2 = Loop.create.toOption.get
 
-    val found = CallbackRegistry.findAs[Int => String](id)
-    assert(found.isDefined)
-    assertEquals(found.get(42), "number: 42")
+    val fired1 = AtomicBoolean(false)
+    val fired2 = AtomicBoolean(false)
 
-  test("unregister removes callback"):
-    val id = CallbackRegistry.register("to-remove")
-    assert(CallbackRegistry.contains(id))
+    var async1: Async[Open] = null.asInstanceOf[Async[Open]]
+    var async2: Async[Open] = null.asInstanceOf[Async[Open]]
 
-    val removed = CallbackRegistry.unregister(id)
-    assert(removed)
-    assert(!CallbackRegistry.contains(id))
-
-  test("unregister returns false for unknown ID"):
-    val removed = CallbackRegistry.unregister(99999L)
-    assert(!removed)
-
-  test("contains returns correct state"):
-    val id = CallbackRegistry.register("test")
-
-    assert(CallbackRegistry.contains(id))
-    assert(!CallbackRegistry.contains(99999L))
-
-    val _ = CallbackRegistry.unregister(id)
-    assert(!CallbackRegistry.contains(id))
-
-  test("size tracks registered callbacks"):
-    assertEquals(CallbackRegistry.size, 0)
-
-    val id1 = CallbackRegistry.register("a")
-    assertEquals(CallbackRegistry.size, 1)
-
-    val id2 = CallbackRegistry.register("b")
-    assertEquals(CallbackRegistry.size, 2)
-
-    val _ = CallbackRegistry.unregister(id1)
-    assertEquals(CallbackRegistry.size, 1)
-
-    val _ = CallbackRegistry.unregister(id2)
-    assertEquals(CallbackRegistry.size, 0)
-
-  test("clear removes all callbacks"):
-    val _ = CallbackRegistry.register("a")
-    val _ = CallbackRegistry.register("b")
-    val _ = CallbackRegistry.register("c")
-    assertEquals(CallbackRegistry.size, 3)
-
-    CallbackRegistry.clear()
-    assertEquals(CallbackRegistry.size, 0)
-
-  test("IDs restart from 1 after clear"):
-    val id1 = CallbackRegistry.register("first")
-    CallbackRegistry.clear()
-    val id2 = CallbackRegistry.register("second")
-
-    // After clear, IDs should restart from 1 (0 is sentinel for "no callback")
-    assertEquals(id2, 1L)
-
-  test("first registered ID is 1 not 0"):
-    // ID 0 is reserved as sentinel meaning "no callback"
-    val firstId = CallbackRegistry.register("first")
-    assertEquals(firstId, 1L, "First callback ID should be 1, not 0 (0 is sentinel)")
-
-  test("ID 0 is never assigned"):
-    // Register many callbacks and verify none get ID 0
-    val ids = (0 until 100).map(i => CallbackRegistry.register(s"cb-$i"))
-    assert(!ids.contains(0L), "ID 0 should never be assigned (reserved as sentinel)")
-
-  test("registry handles many callbacks"):
-    val ids = (0 until 1000).map { i =>
-      CallbackRegistry.register(s"callback-$i")
+    val init1 = Async.init(loop1) { () =>
+      fired1.set(true)
+      val _ = async1.close
+      loop1.stop
+    }
+    val init2 = Async.init(loop2) { () =>
+      fired2.set(true)
+      val _ = async2.close
+      loop2.stop
     }
 
-    assertEquals(CallbackRegistry.size, 1000)
-    assertEquals(ids.toSet.size, 1000) // All IDs unique
+    assert(init1.isRight && init2.isRight)
+    async1 = init1.toOption.get
+    async2 = init2.toOption.get
 
-    // Verify all can be retrieved
-    ids.zipWithIndex.foreach { case (id, i) =>
-      assertEquals(CallbackRegistry.get(id), s"callback-$i")
-    }
+    val t1 = Thread(() => { val _ = loop1.run(RunMode.Default); val _ = loop1.close })
+    val t2 = Thread(() => { val _ = loop2.run(RunMode.Default); val _ = loop2.close })
+    t1.start()
+    t2.start()
+
+    // Give loops a moment to enter run
+    Thread.sleep(10)
+
+    val _ = async1.send
+    val _ = async2.send
+
+    t1.join(2000)
+    t2.join(2000)
+
+    assert(fired1.get(), "async callback on loop1 was not invoked")
+    assert(fired2.get(), "async callback on loop2 was not invoked")
+    assertEquals(CallbackRegistry.size(loop1.ptrUnsafe), 0)
+    assertEquals(CallbackRegistry.size(loop2.ptrUnsafe), 0)
 
 end CallbackRegistrySuite

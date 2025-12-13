@@ -38,6 +38,16 @@ enum AddressError:
   case InvalidPort(value: Int)
 
   /**
+   * Port string is malformed or not numeric.
+   *
+   * @param input
+   *   The original input string
+   * @param detail
+   *   Description of what was wrong
+   */
+  case InvalidPortString(input: String, detail: String)
+
+  /**
    * IPv4 address string is malformed.
    *
    * @param input
@@ -72,6 +82,7 @@ enum AddressError:
    */
   def message: String = this match
     case InvalidPort(v)             => s"Invalid port: $v (must be in range 0-65535)"
+    case InvalidPortString(i, d)    => s"Invalid port '$i': $d (must be in range 0-65535)"
     case InvalidIpv4(i, d)          => s"Invalid IPv4 address '$i': $d"
     case InvalidIpv6(i, d)          => s"Invalid IPv6 address '$i': $d"
     case InvalidSocketAddress(i, d) => s"Invalid socket address '$i': $d"

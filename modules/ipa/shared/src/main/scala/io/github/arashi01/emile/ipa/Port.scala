@@ -33,8 +33,8 @@ import scala.compiletime.error
  * val https = Port(443)
  *
  * // Runtime validation
- * val dynamic: Either[AddressError, Port] = Port.fromInt(userInput)
- * val parsed: Option[Port] = Port.fromString("8080")
+ * val dynamic: Either[AddressError, Port] = Port.from(userInput)
+ * val parsed: Either[AddressError, Port] = Port.from("8080")
  *
  * // Unchecked (caller must ensure validity)
  * val unsafe = Port.unsafeFromInt(value)
@@ -83,45 +83,46 @@ object Port:
 
   /**
    * Construct a Port from a runtime integer with validation.
-   *
-   * @param value
-   *   The port number to validate
-   * @return
-   *   Either an error or the validated Port
    */
-  def fromInt(value: Int): Either[AddressError, Port] =
+  def from(value: Int): Either[AddressError, Port] =
     if value >= MinValue && value <= MaxValue then Right(value)
     else Left(AddressError.InvalidPort(value))
+
+  /**
+   * Parse a Port from a string representation with validation and error
+   * detail.
+   */
+  def from(value: String): Either[AddressError, Port] =
+    if value == null then Left(AddressError.InvalidPortString("null", "null input"))
+    else
+      val trimmed = value.trim
+      if trimmed.isEmpty then Left(AddressError.InvalidPortString(value, "empty input"))
+      else
+        scala.util.Try(trimmed.toInt).toOption match
+          case Some(n) => from(n)
+          case None    => Left(AddressError.InvalidPortString(value, "non-numeric input"))
 
   /**
    * Construct a Port from an integer without validation.
    *
    * WARNING: Caller must ensure value is in valid range [0, 65535]. Using
    * invalid values leads to undefined behaviour.
-   *
-   * @param value
-   *   The port number (must be valid)
-   * @return
-   *   The Port (unchecked)
    */
   inline def unsafeFromInt(value: Int): Port = value
-
-  /**
-   * Parse a Port from a string representation.
-   *
-   * @param value
-   *   The string to parse
-   * @return
-   *   Some(Port) if valid, None otherwise
-   */
-  def fromString(value: String): Option[Port] =
-    scala.util.Try(value.toInt).toOption.flatMap(fromInt(_).toOption)
 
   extension (p: Port)
     /** Get the underlying integer value. */
     inline def value: Int = p
 
+    /** Append decimal representation to an Appendable. */
+    def writeTo[A <: Appendable](out: A): A =
+      out.append(java.lang.Integer.toString(p))
+      out
+
     /** String representation. */
-    def show: String = p.toString
+    def show: String =
+      val sb = new java.lang.StringBuilder
+      writeTo(sb): Unit
+      sb.toString
 
 end Port

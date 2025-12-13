@@ -17,6 +17,9 @@ import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Po
  */
 class EmileConfigSuite extends FunSuite:
 
+  private def expectRight[A](either: Either[?, A]): A =
+    either.fold(err => fail(err.toString), identity)
+
   // ============================================================================
   // EmileConfig ADT Tests
   // ============================================================================
@@ -301,13 +304,13 @@ class EmileConfigSuite extends FunSuite:
   // ============================================================================
 
   private def addr(ip: String, port: Int): SocketAddress =
-    val ipv4 = Ipv4Address.parse(ip).toOption.get
-    val p = Port.fromInt(port).toOption.get
+    val ipv4 = expectRight(Ipv4Address.from(ip))
+    val p = expectRight(Port.from(port))
     SocketAddress.v4(ipv4, p)
 
   private def addrV6(ip: String, port: Int): SocketAddress =
-    val ipv6 = Ipv6Address.parse(ip).toOption.get
-    val p = Port.fromInt(port).toOption.get
+    val ipv6 = expectRight(Ipv6Address.from(ip))
+    val p = expectRight(Port.from(port))
     SocketAddress.v6(ipv6, p)
 
   test("Tcp.bind (no config) uses libuv default flags"):
