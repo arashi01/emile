@@ -4,10 +4,15 @@
  */
 package io.github.arashi01.emile
 
-import scala.scalanative.unsafe.*
-import scala.scalanative.libc.stdlib
-import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry}
+// scalafix:off DisableSyntax.null, DisableSyntax.asInstanceOf, DisableSyntax.return, DisableSyntax.while; libuv FFI loop management
+
+import boilerplate.nullable.*
+import io.github.arashi01.emile.unsafe.CallbackRegistry
+import io.github.arashi01.emile.unsafe.LibUV
 import io.github.arashi01.emile.unsafe.types.UvLoopPtr
+
+import scala.scalanative.libc.stdlib
+import scala.scalanative.unsafe.*
 
 /**
  * Handle to a libuv event loop.
@@ -35,9 +40,9 @@ object Loop:
    * @return Right with the default loop, or Left on error
    */
   def default: Either[EmileError, Loop] =
-    val loop = LibUV.uv_default_loop()
-    if loop == null then Left(EmileError.SystemError(ErrorCode.NoMemory, "Failed to get default loop"))
-    else Right(loop)
+    LibUV.uv_default_loop().either(
+      EmileError.SystemError(ErrorCode.NoMemory, "Failed to get default loop")
+    )
 
   /**
    * Create a new event loop with libuv defaults.
@@ -49,15 +54,16 @@ object Loop:
    */
   def create: Either[EmileError, Loop] =
     val size = LibUV.uv_loop_size()
-    val loop = stdlib.calloc(1L, size.toLong)
-    if loop == null then Left(EmileError.SystemError(ErrorCode.NoMemory, "Failed to allocate loop"))
-    else
+    stdlib.calloc(1L, size.toLong).either(
+      EmileError.SystemError(ErrorCode.NoMemory, "Failed to allocate loop")
+    ).flatMap { loop =>
       val result = LibUV.uv_loop_init(loop)
       if result < 0 then
         stdlib.free(loop)
         Left(toSystemError(result))
       else
         Right(loop)
+    }
 
   /**
    * Create a new event loop with the specified configuration overrides.
@@ -75,9 +81,9 @@ object Loop:
     if !config.hasOverrides then create
     else
       val size = LibUV.uv_loop_size()
-      val loop = stdlib.calloc(1L, size.toLong)
-      if loop == null then Left(EmileError.SystemError(ErrorCode.NoMemory, "Failed to allocate loop"))
-      else
+      stdlib.calloc(1L, size.toLong).either(
+        EmileError.SystemError(ErrorCode.NoMemory, "Failed to allocate loop")
+      ).flatMap { loop =>
         val result = LibUV.uv_loop_init(loop)
         if result < 0 then
           stdlib.free(loop)
@@ -91,6 +97,7 @@ object Loop:
               Left(err)
             case Right(_) =>
               Right(loop)
+      }
 
   /**
    * Apply configuration overrides to an existing loop.

@@ -4,10 +4,12 @@
  */
 package io.github.arashi01.emile
 
-import scala.scalanative.unsafe.*
-import scala.scalanative.libc.stdlib.free
+import io.github.arashi01.emile.unsafe.CallbackIdUtils
+import io.github.arashi01.emile.unsafe.CallbackRegistry
 import io.github.arashi01.emile.unsafe.LibUV
-import io.github.arashi01.emile.unsafe.{CallbackRegistry, CallbackIdUtils}
+
+import scala.scalanative.libc.stdlib.free
+import scala.scalanative.unsafe.*
 
 /**
  * Type class for libuv handle operations.
@@ -163,7 +165,7 @@ object Handle:
         LibUV.uv_has_ref(toPtr(h)) != 0
 
       def loop: Loop =
-        LibUV.uv_handle_get_loop(toPtr(h)).asInstanceOf[Loop]
+        LibUV.uv_handle_get_loop(toPtr(h)).asInstanceOf[Loop] // scalafix:ok; libuv returns opaque Ptr
 
       def handleType: HandleType =
         HandleType.fromLibuv(LibUV.uv_handle_get_type(toPtr(h)))

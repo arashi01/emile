@@ -4,8 +4,11 @@
  */
 package io.github.arashi01.emile
 
+import io.github.arashi01.emile.ipa.Ipv4Address
+import io.github.arashi01.emile.ipa.Ipv6Address
+import io.github.arashi01.emile.ipa.Port
+import io.github.arashi01.emile.ipa.SocketAddress
 import munit.FunSuite
-import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Port}
 
 /**
  * Tests for EmileConfig, LoopConfig, and TcpConfig.
@@ -16,6 +19,7 @@ import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Po
  * - Real libuv integration for all configuration paths
  */
 class EmileConfigSuite extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[?, A]): A =
     either.fold(err => fail(err.toString), identity)

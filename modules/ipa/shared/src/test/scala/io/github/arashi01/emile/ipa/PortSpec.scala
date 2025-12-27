@@ -31,6 +31,7 @@ import munit.FunSuite
  * - Constants: MinValue, MaxValue, Wildcard
  */
 class PortSpec extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[AddressError, A]): A =
     either.fold(err => fail(err.message), identity)
@@ -229,6 +230,35 @@ val bad = port"80a${1}"
   test("Port.Wildcard equals port 0"):
     val port0 = expectRight(Port.from(0))
     assertEquals(Port.Wildcard, port0)
+
+  // ============================================================
+  // Well-known port constants tests
+  // ============================================================
+
+  test("Port.SSH is 22"):
+    assertEquals(Port.SSH.value, 22)
+
+  test("Port.DNS is 53"):
+    assertEquals(Port.DNS.value, 53)
+
+  test("Port.HTTP is 80"):
+    assertEquals(Port.HTTP.value, 80)
+
+  test("Port.HTTPS is 443"):
+    assertEquals(Port.HTTPS.value, 443)
+
+  test("Port.MySQL is 3306"):
+    assertEquals(Port.MySQL.value, 3306)
+
+  test("Port.PostgreSQL is 5432"):
+    assertEquals(Port.PostgreSQL.value, 5432)
+
+  test("Port.Redis is 6379"):
+    assertEquals(Port.Redis.value, 6379)
+
+  test("Port.SQLServer is 1433"):
+    assertEquals(Port.SQLServer.value, 1433)
+
 
   // ============================================================
   // Ordering tests

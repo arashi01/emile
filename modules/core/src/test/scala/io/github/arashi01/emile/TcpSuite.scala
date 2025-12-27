@@ -4,8 +4,12 @@
  */
 package io.github.arashi01.emile
 
+import io.github.arashi01.emile.ipa.Ipv4Address
+import io.github.arashi01.emile.ipa.Ipv6Address
+import io.github.arashi01.emile.ipa.Port
+import io.github.arashi01.emile.ipa.SocketAddress
 import munit.FunSuite
-import io.github.arashi01.emile.ipa.{SocketAddress, Ipv4Address, Ipv6Address, Port}
+
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -20,6 +24,7 @@ import scala.collection.mutable.ArrayBuffer
  * - Error conditions (bind conflicts, connection refused)
  */
 class TcpSuite extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[?, A]): A =
     either.fold(err => fail(err.toString), identity)
@@ -111,7 +116,7 @@ class TcpSuite extends FunSuite:
       _ <- client.connect(addr("127.0.0.1", serverPort)) { _ =>
         val _ = client.close
       }
-      timer <- Timer.after(loop, Duration.millis(50)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(50)) { () =>
         val _ = serverRef.close
         val _ = timerRef.close
       }
@@ -205,7 +210,7 @@ class TcpSuite extends FunSuite:
         connectStatus = Some(status)
         val _ = clientRef.close
       }
-      timer <- Timer.after(loop, Duration.millis(500)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(500)) { () =>
         if !clientRef.isClosing then
           val _ = clientRef.close
         val _ = timerRef.close
@@ -260,7 +265,7 @@ class TcpSuite extends FunSuite:
             writeStatus = Some(wStatus)
           }
       }
-      timer <- Timer.after(loop, Duration.millis(100)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(100)) { () =>
         val _ = clientRef.close
         val _ = serverRef.close
         val _ = timerRef.close
@@ -323,7 +328,7 @@ class TcpSuite extends FunSuite:
             writeStatus = Some(wStatus)
           }
       }
-      timer <- Timer.after(loop, Duration.millis(500)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(500)) { () =>
         if !clientRef.isClosing then { val _ = clientRef.close }
         if !serverRef.isClosing then { val _ = serverRef.close }
         val _ = timerRef.close
@@ -376,7 +381,7 @@ class TcpSuite extends FunSuite:
           val _ = clientRef.write("First".getBytes("UTF-8"))(_ => ())
           val _ = clientRef.write("Second".getBytes("UTF-8"))(_ => ())
       }
-      timer <- Timer.after(loop, Duration.millis(100)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(100)) { () =>
         val _ = clientRef.close
         val _ = serverRef.close
         val _ = timerRef.close
@@ -439,7 +444,7 @@ class TcpSuite extends FunSuite:
         if status >= 0 then
           val _ = clientRef.writeString("Hello from writeString!")(_ => ())
       }
-      timer <- Timer.after(loop, Duration.millis(100)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(100)) { () =>
         val _ = clientRef.close
         val _ = serverRef.close
         val _ = timerRef.close
@@ -522,7 +527,7 @@ class TcpSuite extends FunSuite:
         connectCount += 1
         val _ = clientRef2.close
       }
-      timer <- Timer.after(loop, Duration.millis(500)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(500)) { () =>
         if !clientRef1.isClosing then { val _ = clientRef1.close }
         if !clientRef2.isClosing then { val _ = clientRef2.close }
         val _ = timerRef.close

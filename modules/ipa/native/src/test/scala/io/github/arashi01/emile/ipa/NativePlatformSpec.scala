@@ -50,6 +50,7 @@ private object LibuvNet:
  * - Full roundtrip tests
  */
 class NativePlatformSpec extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[?, A]): A =
     either.fold(err => fail(err.toString), identity)

@@ -4,11 +4,19 @@
  */
 package io.github.arashi01.emile.cats
 
-import cats.effect.{IO, Resource}
-import cats.effect.unsafe.{PollingSystem, PollingContext, PollResult as CatsPollResult}
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.effect.IO
+import cats.effect.Resource
+import cats.effect.unsafe.PollResult as CatsPollResult
+import cats.effect.unsafe.PollingContext
+import cats.effect.unsafe.PollingSystem
 import cats.effect.unsafe.metrics.PollerMetrics
-import io.github.arashi01.emile.{Loop, LoopConfig, PollResult}
-import io.github.arashi01.emile.{Poller as EmilePoller}
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.LoopConfig
+import io.github.arashi01.emile.PollResult
+import io.github.arashi01.emile.Poller as EmilePoller
 
 /**
  * cats-effect PollingSystem implementation backed by libuv.
@@ -34,7 +42,7 @@ import io.github.arashi01.emile.{Poller as EmilePoller}
  * import io.github.arashi01.emile.cats.LibuvPollingSystem
  *
  * object MyApp extends IOApp:
- *   override protected def pollingSystem = LibuvPollingSystem
+ *   override protected def pollingSystem = LibuvPollingSystem.default
  *
  *   def run(args: List[String]): IO[ExitCode] = ...
  * }}}
@@ -45,6 +53,7 @@ import io.github.arashi01.emile.{Poller as EmilePoller}
  * import io.github.arashi01.emile.cats.EmileIOApp
  *
  * object MyApp extends EmileIOApp:
+ *   override def loopConfig: LoopConfig = LoopConfig.withMetrics
  *   def run(args: List[String]): IO[ExitCode] = ...
  * }}}
  *
@@ -54,61 +63,55 @@ import io.github.arashi01.emile.{Poller as EmilePoller}
  * - Handles created on one loop CANNOT be used on another
  * - Use `EmileIOApp.withLoop` to access the current thread's loop
  */
-object LibuvPollingSystem extends PollingSystem:
+final class LibuvPollingSystem private (config: LoopConfig) extends PollingSystem:
   /** The API exposed to IO effects - provides access to the libuv loop. */
-  type Api = LoopAccess
+  type Api = LibuvPollingSystem.LoopAccess
 
   /** The per-thread poller wrapping a libuv loop. */
-  type Poller = LibuvPoller
-
-  // Configuration for loop creation - uses AtomicReference for thread safety
-  private val loopConfigRef = new java.util.concurrent.atomic.AtomicReference[LoopConfig](LoopConfig.empty)
-
-  /**
-   * Configure the polling system with custom loop options.
-   *
-   * Must be called before the runtime starts (i.e., before `run` in IOApp).
-   *
-   * @param config Loop configuration to use for all worker threads
-   */
-  def configure(config: LoopConfig): Unit =
-    loopConfigRef.set(config)
-
-  // =========================================================================
-  // PollingSystem implementation
-  // =========================================================================
+  type Poller = LibuvPollingSystem.LibuvPoller
 
   override def close(): Unit = ()
     // Nothing to do at system level - pollers are closed individually
 
-  override def makeApi(ctx: PollingContext[LibuvPoller]): LoopAccess =
-    new LoopAccess(ctx)
+  override def makeApi(ctx: PollingContext[Poller]): LibuvPollingSystem.LoopAccess =
+    new LibuvPollingSystem.LoopAccess(ctx)
 
-  override def makePoller(): LibuvPoller =
-    EmilePoller(loopConfigRef.get()) match
-      case Right(p) => new LibuvPoller(p)
-      case Left(e)  => throw new RuntimeException(s"Failed to create libuv poller: ${e.getMessage}")
+  override def makePoller(): Poller =
+    EmilePoller(config) match
+      case Right(p) => new LibuvPollingSystem.LibuvPoller(p)
+      case Left(e)  => throw e // scalafix:ok; cats-effect PollingSystem.makePoller API requires throwing
 
-  override def closePoller(poller: LibuvPoller): Unit =
+  override def closePoller(poller: Poller): Unit =
     poller.underlying.close()
 
-  override def poll(poller: LibuvPoller, nanos: Long): CatsPollResult =
+  override def poll(poller: Poller, nanos: Long): CatsPollResult =
     poller.underlying.poll(nanos) match
       case PollResult.Complete    => CatsPollResult.Complete
       case PollResult.Idle        => CatsPollResult.Complete // cats-effect has no Idle; loop liveness is signalled via needsPoll
       case PollResult.Interrupted => CatsPollResult.Interrupted
 
-  override def processReadyEvents(poller: LibuvPoller): Boolean =
+  override def processReadyEvents(poller: Poller): Boolean =
     poller.underlying.processReadyEvents()
 
-  override def needsPoll(poller: LibuvPoller): Boolean =
+  override def needsPoll(poller: Poller): Boolean =
     poller.underlying.needsPoll
 
-  override def interrupt(targetThread: Thread, targetPoller: LibuvPoller): Unit =
+  override def interrupt(targetThread: Thread, targetPoller: Poller): Unit =
     targetPoller.underlying.interrupt()
 
-  override def metrics(poller: LibuvPoller): PollerMetrics =
+  override def metrics(poller: Poller): PollerMetrics =
     poller.metrics
+
+  /** Expose the captured configuration for inspection/testing. */
+  def loopConfig: LoopConfig = config
+end LibuvPollingSystem
+
+object LibuvPollingSystem:
+  /** Default polling system with no loop overrides. */
+  val default: LibuvPollingSystem = LibuvPollingSystem(LoopConfig.empty)
+
+  /** Builder for a polling system with the provided loop configuration. */
+  def apply(config: LoopConfig): LibuvPollingSystem = new LibuvPollingSystem(config)
 
   // =========================================================================
   // Nested types
@@ -138,12 +141,12 @@ object LibuvPollingSystem extends PollingSystem:
      * This is the recommended way to get a loop for creating libuv handles.
      * The loop is NOT closed when the resource is released (it belongs to the runtime).
      *
-     * @return Resource providing access to the loop
+     * @return Resource providing access to the loop with typed error channel
      */
-    def loop: Resource[IO, Loop] =
+    def loop: Resource[Eff.Of[IO, EmileError], Loop] =
       Resource.eval(IO.async_[Loop] { cb =>
         ctx.accessPoller(poller => cb(Right(poller.loop)))
-      })
+      }).eff[EmileError]
 
     /**
      * Check if the current thread owns the given poller.
@@ -154,28 +157,30 @@ object LibuvPollingSystem extends PollingSystem:
     def ownsPoller(poller: LibuvPoller): Boolean =
       ctx.ownPoller(poller)
 
+    /**
+     * Check if the current worker owns the supplied loop.
+     *
+     * @return Eff with typed error channel indicating ownership
+     */
+    def ownsLoop(loop: Loop): Eff[IO, EmileError, Boolean] =
+      Eff.liftF[IO, EmileError, Boolean](IO.async_[Boolean] { cb =>
+        ctx.accessPoller { poller =>
+          cb(Right(poller.loop == loop))
+        }
+      })
+
   object LoopAccess:
     /**
-     * Find the LoopAccess API if this runtime uses LibuvPollingSystem.
+     * Get the LoopAccess API with typed error channel.
      *
-     * @return Some(LoopAccess) if available, None otherwise
+     * @return Eff containing LoopAccess or EmileError.MissingLibuvPollingSystem
      */
-    def find: IO[Option[LoopAccess]] =
-      IO.pollers.map(_.collectFirst { case access: LoopAccess => access })
-
-    /**
-     * Get the LoopAccess API, failing if this runtime doesn't use LibuvPollingSystem.
-     *
-     * @return LoopAccess for the current runtime
-     * @throws RuntimeException if LibuvPollingSystem is not installed
-     */
-    def get: IO[LoopAccess] =
-      find.flatMap {
-        case Some(access) => IO.pure(access)
-        case None => IO.raiseError(
-          new RuntimeException("LibuvPollingSystem is not installed in this IORuntime. " +
-            "Use EmileIOApp or IORuntimeBuilder.setPollingSystem(LibuvPollingSystem).")
-        )
+    def get: Eff[IO, EmileError, LoopAccess] =
+      Eff.liftF[IO, EmileError, Option[LoopAccess]](
+        IO.pollers.map(_.collectFirst { case access: LoopAccess => access })
+      ).flatMap {
+        case Some(access) => Eff.succeed[IO, EmileError, LoopAccess](access)
+        case None         => Eff.fail[IO, EmileError, LoopAccess](EmileError.MissingLibuvPollingSystem)
       }
 
   /**

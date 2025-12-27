@@ -4,12 +4,17 @@
  */
 package io.github.arashi01.emile
 
-import scala.scalanative.unsafe.*
-import scala.scalanative.libc.stdlib
-import scala.scalanative.runtime.{fromRawPtr, toRawPtr}
-import scala.scalanative.runtime.Intrinsics.{castObjectToRawPtr, castRawPtrToObject}
+// scalafix:off DisableSyntax.null, DisableSyntax.var, DisableSyntax.return, DisableSyntax.asInstanceOf; libuv FFI event loop
+
 import io.github.arashi01.emile.unsafe.LibUV
 import io.github.arashi01.emile.unsafe.types.UvAsyncPtr
+
+import scala.scalanative.libc.stdlib
+import scala.scalanative.runtime.Intrinsics.castObjectToRawPtr
+import scala.scalanative.runtime.Intrinsics.castRawPtrToObject
+import scala.scalanative.runtime.fromRawPtr
+import scala.scalanative.runtime.toRawPtr
+import scala.scalanative.unsafe.*
 
 /**
  * Result of a poll operation.
@@ -166,7 +171,7 @@ object Poller:
    * each worker thread should have its own Poller.
    *
    * @param config Loop configuration options
-   * @return Either an error or the initialized Poller
+   * @return Either an error or the initialised Poller
    */
   def apply(config: LoopConfig): Either[EmileError, Poller] =
     Loop.create(config).map(loop => new PollerImpl(loop))
@@ -182,14 +187,14 @@ object Poller:
    *
    * 2. '''No separate timer for timeout''': We use `UV_RUN_ONCE` which
    *    respects `uv_backend_timeout()`. For precise timeout control, we
-   *    could add a timer, but libuv's default behavior is sufficient for
+   *    could add a timer, but libuv's default behaviour is sufficient for
    *    effect system integration.
    *
    * 3. '''Volatile interrupted flag''': Checked before/after poll to handle
    *    the case where interrupt() is called between checking and blocking.
    */
   private final class PollerImpl(val loop: Loop) extends Poller:
-    // Async handle for cross-thread interrupt (lazily initialized)
+    // Async handle for cross-thread interrupt (lazily initialised)
     @volatile private var asyncHandle: UvAsyncPtr = UvAsyncPtr.Null
 
     // Interrupt flag - set by interrupt(), cleared by poll()
@@ -288,7 +293,7 @@ object Poller:
         val _ = loop.closeDrain
 
     /**
-     * Lazily initialize the async handle.
+     * Lazily initialise the async handle.
      *
      * Double-checked locking pattern for thread safety.
      * The async handle is used to wake up the loop from other threads.

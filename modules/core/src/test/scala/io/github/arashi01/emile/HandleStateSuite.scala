@@ -20,6 +20,7 @@ import munit.FunSuite
  * - init returns an [Open] handle
  */
 class HandleStateSuite extends FunSuite:
+// scalafix:off
 
   test("HandleState.Open and Closed are distinct types"):
     // This is a compile-time property - the fact this compiles proves it
@@ -105,7 +106,7 @@ class HandleStateSuite extends FunSuite:
     withLoop { loop =>
       Timer.init(loop).foreach { timer =>
         // These compile because timer is Timer[Open]
-        val startResult = timer.start(Duration.millis(1000), Duration.Zero)(() => ())
+        val startResult = timer.start(Timeout.millis(1000), Timeout.Zero)(() => ())
         assert(startResult.isRight)
         val stopResult = timer.stop
         assert(stopResult.isRight)
@@ -207,7 +208,7 @@ class HandleStateSuite extends FunSuite:
 
       // timer1 is closed, timer2 is open
       // We can only operate on timer2
-      val startResult = open2.start(Duration.millis(1000), Duration.Zero)(() => ())
+      val startResult = open2.start(Timeout.millis(1000), Timeout.Zero)(() => ())
       assert(startResult.isRight)
 
       // Clean up

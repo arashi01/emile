@@ -4,8 +4,10 @@
  */
 package io.github.arashi01.emile
 
-import scala.scalanative.unsafe.fromCString
 import io.github.arashi01.emile.unsafe.LibUV
+
+import scala.scalanative.unsafe.fromCString
+import scala.util.control.NoStackTrace
 
 /**
  * Root error type for all Emile operations.
@@ -18,9 +20,10 @@ import io.github.arashi01.emile.unsafe.LibUV
  * This provides explicit error handling at all call sites.
  */
 sealed abstract class EmileError(msg: String)
-    extends Exception(msg)
-    with scala.util.control.NoStackTrace
-    derives CanEqual
+    extends Throwable(msg)
+    with NoStackTrace
+    with Product
+    with Serializable
 
 object EmileError:
   /**
@@ -80,6 +83,28 @@ object EmileError:
       extends EmileError(message)
 
   /**
+   * Feature or operation not supported on this platform.
+   *
+   * @param feature The feature name
+   * @param reason Why it is not supported
+   */
+  final case class NotSupported(feature: String, reason: String)
+      extends EmileError(s"$feature not supported: $reason")
+
+  /**
+   * POSIX system call error (for non-libuv operations).
+   *
+   * This is used for errors from POSIX functions like pipe(), fcntl(), sigaction()
+   * that are not mediated by libuv.
+   *
+   * @param syscall The system call name
+   * @param errnoValue The POSIX errno value
+   * @param message Human-readable error description from strerror
+   */
+  final case class PosixError(syscall: String, errnoValue: Int, message: String)
+      extends EmileError(s"$syscall failed: $message (errno=$errnoValue)")
+
+  /**
    * Internal error wrapping unexpected exceptions.
    *
    * @param cause The underlying exception
@@ -98,15 +123,61 @@ object EmileError:
   final case class Combined(errors: List[EmileError])
       extends EmileError(errors.map(_.getMessage).mkString("; "))
 
+  /**
+   * Signal is already being watched.
+   *
+   * Only one watcher can be registered per signal number at a time.
+   *
+   * @param signum The signal number
+   */
+  final case class SignalAlreadyWatched(signum: Int)
+      extends EmileError(s"Signal $signum is already being watched")
+
+  /**
+   * Signal is not currently being watched.
+   *
+   * @param signum The signal number
+   */
+  final case class SignalNotWatched(signum: Int)
+      extends EmileError(s"Signal $signum is not being watched")
+
+  /**
+   * Invalid signal number.
+   *
+   * @param signum The invalid signal number
+   */
+  final case class InvalidSignal(signum: Int)
+      extends EmileError(s"Invalid signal number: $signum")
+
+  /**
+   * Loop ownership violation in cats-effect integration.
+   *
+   * Occurs when attempting to use a loop not owned by the current worker thread.
+   */
+  case object LoopOwnershipViolation
+      extends EmileError(
+        "Loop does not belong to the current cats-effect worker; obtain it via EmileLoop.integrated"
+      )
+
+  /**
+   * cats-effect runtime not configured with LibuvPollingSystem.
+   *
+   * Occurs when attempting to use EmileLoop.integrated without LibuvPollingSystem.
+   */
+  case object MissingLibuvPollingSystem
+      extends EmileError(
+        "LibuvPollingSystem is not installed in this IORuntime; use EmileIOApp or setPollingSystem(LibuvPollingSystem(...))"
+      )
+
   extension (e: EmileError)
     /** Retrieve error code if applicable. */
-    def errorCode: Option[ErrorCode] = e match
+    inline def errorCode: Option[ErrorCode] = e match
       case SystemError(c, _)  => Some(c)
       case AddressError(c, _) => Some(c)
       case _                  => None
 
     /** Lift single error into List for accumulation. */
-    def toList: List[EmileError] = List(e)
+    inline def toList: List[EmileError] = List(e)
 
   /**
    * Create a SystemError from a libuv error code.
@@ -123,4 +194,6 @@ object EmileError:
 
   /** Memory allocation failure. */
   val OutOfMemory: SystemError = SystemError(ErrorCode.NoMemory, "Out of memory")
+
+  given CanEqual[EmileError, EmileError] = CanEqual.derived
 end EmileError

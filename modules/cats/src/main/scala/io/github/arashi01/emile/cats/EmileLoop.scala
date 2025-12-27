@@ -4,8 +4,15 @@
  */
 package io.github.arashi01.emile.cats
 
-import cats.effect.{IO, Resource}
-import io.github.arashi01.emile.{EmileError, Loop, LoopConfig, RunMode}
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.effect.IO
+import cats.effect.Resource
+import cats.syntax.all.*
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.LoopConfig
+import io.github.arashi01.emile.RunMode
 import io.github.arashi01.emile.cats.LibuvPollingSystem.LoopAccess
 
 /**
@@ -32,10 +39,6 @@ import io.github.arashi01.emile.cats.LibuvPollingSystem.LoopAccess
  */
 object EmileLoop:
 
-  /** Helper to lift Either[EmileError, A] to IO[A]. */
-  private def liftEmile[A](either: Either[EmileError, A]): IO[A] =
-    either.fold(e => IO.raiseError(e), IO.pure)
-
   /**
    * Get the current thread's libuv loop from the runtime.
    *
@@ -46,10 +49,10 @@ object EmileLoop:
    * The loop is NOT closed when the resource is released (it belongs
    * to the runtime).
    *
-   * @return Resource providing access to the current thread's loop
+   * @return Resource providing access to the current thread's loop with typed error channel
    */
-  val integrated: Resource[IO, Loop] =
-    LoopAccess.get.toResource.flatMap(_.loop)
+  val integrated: Resource[Eff.Of[IO, EmileError], Loop] =
+    Resource.eval(LoopAccess.get).flatMap(_.loop)
 
 
 
@@ -62,7 +65,7 @@ object EmileLoop:
    *
    * The loop is properly drained and closed when the resource is released.
    */
-  def create: Resource[IO, Loop] =
+  inline def create: Resource[Eff.Of[IO, EmileError], Loop] =
     create(LoopConfig.empty)
 
   /**
@@ -71,11 +74,11 @@ object EmileLoop:
    * @param config Loop configuration options
    * @return Resource that manages loop lifecycle
    */
-  def create(config: LoopConfig): Resource[IO, Loop] =
+  def create(config: LoopConfig): Resource[Eff.Of[IO, EmileError], Loop] =
     Resource.make(
-      acquire = liftEmile(Loop.create(config))
+      acquire = Loop.create(config).eff[IO]
     )(
-      release = loop => drainAndClose(loop)
+      release = loop => Eff.liftF(drainAndClose(loop))
     )
 
   /**
@@ -104,7 +107,7 @@ object EmileLoop:
     }
 
   // =========================================================================
-  // Loop extensions for IO
+  // Loop extensions for Eff-based operations
   // =========================================================================
 
   extension (loop: Loop)
@@ -113,18 +116,20 @@ object EmileLoop:
      *
      * @return true if loop still has active handles
      */
-    def runOnce: IO[Boolean] =
-      liftEmile(loop.run(RunMode.Once))
+    inline def runOnce: Eff[IO, EmileError, Boolean] =
+      loop.run(RunMode.Once).eff[IO]
 
     /**
      * Run loop until all handles are closed.
      *
      * Blocks the fiber until no active handles remain.
      */
-    def runUntilComplete: IO[Unit] =
-      loop.runOnce.flatMap { alive =>
-        if alive then loop.runUntilComplete else IO.unit
-      }
+    def runUntilComplete: Eff[IO, EmileError, Unit] =
+      def drain: Eff[IO, EmileError, Unit] =
+        loop.runOnce.flatMap { alive =>
+          if alive then Eff.liftF(IO.cede) *> drain else Eff.succeed[IO, EmileError, Unit](())
+        }
+      drain
 
     /**
      * Run loop in non-blocking mode.
@@ -133,8 +138,7 @@ object EmileLoop:
      *
      * @return true if loop still has active handles
      */
-    def runNoWait: IO[Boolean] =
-      liftEmile(loop.run(RunMode.NoWait))
+    inline def runNoWait: Eff[IO, EmileError, Boolean] =
+      loop.run(RunMode.NoWait).eff[IO]
 
 end EmileLoop
-

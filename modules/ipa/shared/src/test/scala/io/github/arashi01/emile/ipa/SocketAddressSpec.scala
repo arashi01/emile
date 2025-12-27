@@ -34,6 +34,7 @@ import munit.FunSuite
  * - Wildcard constant
  */
 class SocketAddressSpec extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[?, A]): A =
     either.fold(err => fail(err.toString), identity)
@@ -368,6 +369,20 @@ class SocketAddressSpec extends FunSuite:
     val addr = SocketAddress.any6(port)
     assertEquals(addr.show, "[::]:8080")
     assert(addr.isV6)
+
+  test("SocketAddress.loopback is alias for localhost"):
+    val port = expectRight(Port.from(3000))
+    val loopback = SocketAddress.loopback(port)
+    val localhost = SocketAddress.localhost(port)
+    assertEquals(loopback, localhost)
+    assertEquals(loopback.show, "127.0.0.1:3000")
+
+  test("SocketAddress.loopback6 is alias for localhost6"):
+    val port = expectRight(Port.from(3000))
+    val loopback6 = SocketAddress.loopback6(port)
+    val localhost6 = SocketAddress.localhost6(port)
+    assertEquals(loopback6, localhost6)
+    assertEquals(loopback6.show, "[::1]:3000")
 
   // ============================================================
   // Wildcard constant tests

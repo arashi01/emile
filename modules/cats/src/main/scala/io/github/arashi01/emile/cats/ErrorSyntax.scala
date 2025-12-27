@@ -4,36 +4,32 @@
  */
 package io.github.arashi01.emile.cats
 
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.data.NonEmptyChain
+import cats.data.Validated
+import cats.data.ValidatedNec
 import cats.effect.IO
 import io.github.arashi01.emile.EmileError
 
 /**
- * Error handling syntax for cats-effect integration.
+ * Error handling syntax for Eff-based typed error channels.
  *
- * Provides extension methods to bridge between EmileError and IO's Throwable-based
- * error channel. Since EmileError extends Throwable directly, no wrapper is needed.
+ * Provides conversions between Eff[IO, EmileError, A] and IO[A], plus utilities
+ * for working with EmileError in IO contexts.
  */
 
-extension [A](io: IO[Either[EmileError, A]])
+extension [A](eff: Eff[IO, EmileError, A])
   /**
-   * Flatten Either[EmileError, A] into IO error channel.
+   * Raise EmileError into IO's Throwable channel.
    *
-   * Named `rethrowEmile` to avoid conflict with cats-effect's built-in `rethrow`.
+   * Converts Eff[IO, EmileError, A] → IO[A], raising EmileError as throwables.
+   * Since EmileError extends Throwable, this is zero-cost.
    */
-  def rethrowEmile: IO[A] = io.flatMap {
+  inline def rethrow: IO[A] = eff.either.flatMap {
     case Right(a) => IO.pure(a)
     case Left(e)  => IO.raiseError(e)
   }
-
-extension [A](either: Either[EmileError, A])
-  /**
-   * Lift Either into IO, raising EmileError directly.
-   *
-   * This is the standard way to convert emile-core results to IO.
-   */
-  def liftIO: IO[A] = either match
-    case Right(a) => IO.pure(a)
-    case Left(e)  => IO.raiseError(e)
 
 extension [A](io: IO[A])
   /**
@@ -41,7 +37,7 @@ extension [A](io: IO[A])
    *
    * @param pf Partial function from EmileError to recovery action
    */
-  def catchEmile(pf: PartialFunction[EmileError, IO[A]]): IO[A] =
+  inline def catchEmile(pf: PartialFunction[EmileError, IO[A]]): IO[A] =
     io.handleErrorWith {
       case e: EmileError if pf.isDefinedAt(e) => pf(e)
       case other                              => IO.raiseError(other)
@@ -52,10 +48,10 @@ extension [A](io: IO[A])
    *
    * @param f Function from EmileError to recovery value
    */
-  def recoverEmile(f: EmileError => A): IO[A] =
-    io.handleError {
-      case e: EmileError => f(e)
-      case other         => throw other
+  inline def recoverEmile(f: EmileError => A): IO[A] =
+    io.handleErrorWith {
+      case e: EmileError => IO.pure(f(e))
+      case other         => IO.raiseError(other)
     }
 
 /**
@@ -64,12 +60,36 @@ extension [A](io: IO[A])
  * Usage:
  * {{{
  * io.handleErrorWith {
- *   case Emile(EmileError.ConnectionRefused) => fallback
+ *   case Emile(EmileError.SystemError(code, _)) => fallback
  *   case other => IO.raiseError(other)
  * }
  * }}}
  */
 object Emile:
-  def unapply(t: Throwable): Option[EmileError] = t match
+  inline def unapply(t: Throwable): Option[EmileError] = t match
     case e: EmileError => Some(e)
     case _             => None
+
+// ============================================================================
+// Validation helpers
+// ============================================================================
+
+extension (errors: List[EmileError])
+  /** Convert a list of errors into a ValidatedNec accumulator. */
+  inline def toValidatedNec: ValidatedNec[EmileError, Unit] =
+    NonEmptyChain.fromSeq(errors) match
+      case Some(nec) => Validated.invalid(nec)
+      case None      => Validated.valid(())
+
+extension [A](either: Either[List[EmileError], A])
+  /** Convert Either[List[EmileError], A] into ValidatedNec[EmileError, A]. */
+  inline def toValidatedNec: ValidatedNec[EmileError, A] =
+    either match
+      case Right(value) => Validated.validNec(value)
+      case Left(errs) =>
+        NonEmptyChain.fromSeq(errs) match
+          case Some(nec) => Validated.invalid(nec)
+          case None =>
+            Validated.invalidNec(
+              EmileError.InvalidArgument("errors", "Empty error list supplied to toValidatedNec.")
+            )

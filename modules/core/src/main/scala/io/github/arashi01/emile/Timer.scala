@@ -4,10 +4,15 @@
  */
 package io.github.arashi01.emile
 
+import boilerplate.nullable.*
+import io.github.arashi01.emile.unsafe.CallbackIdUtils
+import io.github.arashi01.emile.unsafe.CallbackRegistry
+import io.github.arashi01.emile.unsafe.LibUV
+
+import scala.scalanative.libc.stdlib.calloc
+import scala.scalanative.libc.stdlib.free
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
-import scala.scalanative.libc.stdlib.{calloc, free}
-import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
 
 /**
  * Timer handle for scheduling callbacks after a delay.
@@ -35,13 +40,13 @@ import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils
  * // One-shot timer after 1 second
  * for
  *   timer <- Timer.init(loop)
- *   _ <- timer.start(Duration.seconds(1), Duration.Zero)(() => println("Fired!"))
+ *   _ <- timer.start(Timeout.seconds(1), Timeout.Zero)(() => println("Fired!"))
  * yield timer
  *
  * // Repeating timer every 500ms
  * for
  *   timer <- Timer.init(loop)
- *   _ <- timer.start(Duration.millis(500), Duration.millis(500))(() => println("Tick"))
+ *   _ <- timer.start(Timeout.millis(500), Timeout.millis(500))(() => println("Tick"))
  * yield timer
  * }}}
  */
@@ -71,15 +76,14 @@ object Timer:
    */
   def init(loop: Loop): Either[EmileError, Timer[Open]] =
     val size = LibUV.uv_handle_size(UV_TIMER)
-    val handle = calloc(1L, size.toLong)
-    if handle == null then Left(EmileError.OutOfMemory)
-    else
+    calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
       val result = LibUV.uv_timer_init(loop.ptrUnsafe, handle)
       if result < 0 then
         free(handle)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
         Right(handle)
+    }
 
   /**
    * Create and start a one-shot timer.
@@ -91,10 +95,10 @@ object Timer:
    * @param callback The callback to invoke
    * @return Either an error or the started timer
    */
-  def after(loop: Loop, timeout: Duration)(callback: () => Unit): Either[EmileError, Timer[Open]] =
+  def after(loop: Loop, timeout: Timeout)(callback: () => Unit): Either[EmileError, Timer[Open]] =
     for
       timer <- init(loop)
-      _ <- timer.start(timeout, Duration.Zero)(callback)
+      _ <- timer.start(timeout, Timeout.Zero)(callback)
     yield timer
 
   /**
@@ -107,7 +111,7 @@ object Timer:
    * @param callback The callback to invoke on each tick
    * @return Either an error or the started timer
    */
-  def interval(loop: Loop, interval: Duration)(callback: () => Unit): Either[EmileError, Timer[Open]] =
+  def interval(loop: Loop, interval: Timeout)(callback: () => Unit): Either[EmileError, Timer[Open]] =
     for
       timer <- init(loop)
       _ <- timer.start(interval, interval)(callback)
@@ -131,7 +135,7 @@ object Timer:
      * @param callback The callback to invoke when the timer fires
      * @return Either an error or success
      */
-    def start(timeout: Duration, repeat: Duration)(callback: () => Unit): Either[EmileError, Unit] =
+    def start(timeout: Timeout, repeat: Timeout)(callback: () => Unit): Either[EmileError, Unit] =
       val loopPtr = LibUV.uv_handle_get_loop(timer)
       // Unregister any existing callback to prevent leaks when restarting timer
       val existingId = CallbackIdUtils.getCallbackId(timer)
@@ -163,8 +167,8 @@ object Timer:
      * @param callback The callback to invoke
      * @return Either an error or success
      */
-    def startOnce(timeout: Duration)(callback: () => Unit): Either[EmileError, Unit] =
-      start(timeout, Duration.Zero)(callback)
+    def startOnce(timeout: Timeout)(callback: () => Unit): Either[EmileError, Unit] =
+      start(timeout, Timeout.Zero)(callback)
 
     /**
      * Stop the timer.
@@ -209,7 +213,7 @@ object Timer:
      *
      * @param repeat The new repeat interval
      */
-    def setRepeat(repeat: Duration): Unit =
+    def setRepeat(repeat: Timeout): Unit =
       LibUV.uv_timer_set_repeat(timer, repeat.toMillis.toULong)
 
     /**
@@ -217,16 +221,16 @@ object Timer:
      *
      * @return The repeat interval (0 for one-shot timers)
      */
-    def repeatInterval: Duration =
-      Duration.millis(LibUV.uv_timer_get_repeat(timer).toLong)
+    def repeatInterval: Timeout =
+      Timeout.millis(LibUV.uv_timer_get_repeat(timer).toLong)
 
     /**
      * Get the time until the timer fires.
      *
-     * @return Duration until the next callback, or 0 if expired/not started
+     * @return Timeout until the next callback, or 0 if expired/not started
      */
-    def dueIn: Duration =
-      Duration.millis(LibUV.uv_timer_get_due_in(timer).toLong)
+    def dueIn: Timeout =
+      Timeout.millis(LibUV.uv_timer_get_due_in(timer).toLong)
 
     /**
      * Close the timer synchronously (no callback).

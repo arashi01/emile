@@ -2,7 +2,7 @@ inThisBuild(
   List(
     scalaVersion := "3.7.4",
     organization := "io.github.arashi01",
-    description := "",
+    description := "Scala Native async I/O library backed by libuv.",
     startYear := Some(2025),
     homepage := Some(url("https://github.com/arashi01/emile")),
     semanticdbEnabled := true,
@@ -23,15 +23,14 @@ inThisBuild(
 )
 
 val libraries = new {
+  val boilerplate = Def.setting("io.github.arashi01" %%% "boilerplate" % "0.2.0")
+  val `boilerplate-effect` = boilerplate(_.withName("boilerplate-effect"))
   val cats = Def.setting("org.typelevel" %%% "cats-core" % "2.13.0")
   val `cats-effect` = Def.setting("org.typelevel" %%% "cats-effect" % "3.7.0-RC1")
   val fs2 = Def.setting("co.fs2" %%% "fs2-core" % "3.13.0-M7")
-  val zio = Def.setting("dev.zio" %%% "zio" % "2.1.23")
-  val `zio-streams` = zio.apply(_.withName("zio-streams"))
-  
+
   // Testing
   val `munit-cats-effect` = Def.setting("org.typelevel" %%% "munit-cats-effect" % "2.2.0-RC1")
-  val `munit-zio` = Def.setting("com.github.poslegm" %%% "munit-zio" % "0.4.0")
   val munit = Def.setting("org.scalameta" %%% "munit" % "1.2.1")
   val `scala-java-time` = Def.setting("io.github.cquiroz" %%% "scala-java-time" % "2.6.0")
 }
@@ -42,61 +41,74 @@ val libraries = new {
 
 lazy val `emile-ipa` = crossProject(JVMPlatform, JSPlatform, NativePlatform)
   .crossType(CrossType.Full)
+  .withoutSuffixFor(NativePlatform)
   .in(file("modules/ipa"))
+  .settings(description := "Pure Scala IP addressing primitives library.")
   .settings(compilerSettings)
   .settings(unitTestSettings)
   .settings(fileHeaderSettings)
   .settings(publishSettings)
+  .settings(libraryDependencies += libraries.boilerplate.value)
   .settings(
-    name := "emile-ipa",
     description := "Cross-platform IP address and socket address types for Scala 3"
   )
-
-lazy val `emile-ipa-jvm` = `emile-ipa`.jvm
-lazy val `emile-ipa-js` = `emile-ipa`.js.enablePlugins(ScalaJSPlugin)
-lazy val `emile-ipa-native` = `emile-ipa`.native.enablePlugins(ScalaNativePlugin)
 
 val `emile-core` =
   project
     .in(file("modules/core"))
     .enablePlugins(ScalaNativePlugin)
-    .dependsOn(`emile-ipa-native`)
+    .dependsOn(`emile-ipa`.native)
+    .settings(description := "Scala Native libuv wrappers and FFI bindings.")
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
+    .settings(libraryDependencies += libraries.boilerplate.value)
 
 
 val `emile-cats` =
   project
     .in(file("modules/cats"))
     .enablePlugins(ScalaNativePlugin)
+    .dependsOn(`emile-ipa`.native)
     .dependsOn(`emile-core`)
+    .settings(description := "Scala Native async I/O library backed by libuv and cats-effect.")
     .settings(compilerSettings)
     .settings(unitTestSettings)
     .settings(fileHeaderSettings)
     .settings(publishSettings)
     .settings(libraryDependencies += libraries.cats.value)
     .settings(libraryDependencies += libraries.`cats-effect`.value)
-    .settings(libraryDependencies += libraries.fs2.value)
-		.settings(libraryDependencies += libraries.`scala-java-time`.value % Provided)
+    .settings(libraryDependencies += libraries.`boilerplate-effect`.value)
+    .settings(libraryDependencies += libraries.`scala-java-time`.value % Test)
     .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
 
 
-val `emile-zio` =
+val `emile-native` =
   project
-    .in(file("modules/zio"))
-    .enablePlugins(ScalaNativePlugin)
-    .dependsOn(`emile-core`)
-    .settings(compilerSettings)
-    .settings(unitTestSettings)
-    .settings(fileHeaderSettings)
-    .settings(publishSettings)
-    .settings(libraryDependencies += libraries.zio.value)
-    .settings(libraryDependencies += libraries.`zio-streams`.value)
-    .settings(libraryDependencies += libraries.`scala-java-time`.value % Provided)
-    .settings(libraryDependencies += libraries.`munit-zio`.value % Test)
+    .in(file(".aggregate/native"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `emile-ipa`.native,
+      `emile-core`,
+      `emile-cats`,
+    )
 
+val `emile-jvm` =
+  project
+    .in(file(".aggregate/jvm"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `emile-ipa`.jvm,
+    )
+
+val `emile-js` =
+  project
+    .in(file(".aggregate/js"))
+    .settings(publish / skip := true)
+    .aggregate(
+      `emile-ipa`.native,
+    )
 
 
 val `emile-root` =
@@ -104,12 +116,9 @@ val `emile-root` =
     .in(file("."))
     .settings(publish / skip := true)
     .aggregate(
-      `emile-ipa-jvm`,
-      `emile-ipa-js`,
-      `emile-ipa-native`,
-      `emile-core`,
-      `emile-cats`,
-      `emile-zio`,
+      `emile-native`,
+      `emile-jvm`,
+      `emile-js`,
     )
 
 def baseCompilerOptions = List(
@@ -165,7 +174,7 @@ def formattingSettings = List(
 
 def unitTestSettings: List[Setting[?]] = List(
   libraryDependencies ++= List(
-    libraries.`munit-zio`.value % Test,
+    libraries.`munit`.value % Test,
   ),
   testFrameworks += new TestFramework("munit.Framework")
 )

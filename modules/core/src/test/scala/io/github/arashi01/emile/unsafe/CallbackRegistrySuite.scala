@@ -4,11 +4,16 @@
  */
 package io.github.arashi01.emile.unsafe
 
-import java.util.concurrent.atomic.AtomicBoolean
+import io.github.arashi01.emile.Async
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.Open
+import io.github.arashi01.emile.RunMode
 import munit.FunSuite
-import io.github.arashi01.emile.{Async, Loop, RunMode, Open}
+
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CallbackRegistrySuite extends FunSuite:
+// scalafix:off
 
   override def beforeEach(context: BeforeEach): Unit =
     CallbackRegistry.clearAll()

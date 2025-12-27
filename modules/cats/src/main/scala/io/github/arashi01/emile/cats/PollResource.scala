@@ -4,9 +4,17 @@
  */
 package io.github.arashi01.emile.cats
 
-import cats.effect.{IO, Resource}
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.effect.IO
+import cats.effect.Resource
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.Open
+import io.github.arashi01.emile.Poll
+import io.github.arashi01.emile.PollEvent
+
 import scala.scalanative.unsafe.Ptr
-import io.github.arashi01.emile.{EmileError, Loop, Open, Poll, PollEvent}
 
 /**
  * cats-effect Resource integration for Poll handles.
@@ -16,9 +24,11 @@ import io.github.arashi01.emile.{EmileError, Loop, Open, Poll, PollEvent}
  */
 object PollResource:
 
-  /** Helper to lift Either[EmileError, A] to IO[A]. */
-  private def liftEmile[A](either: Either[EmileError, A]): IO[A] =
-    either.fold(e => IO.raiseError(e), IO.pure)
+  /** Helper to convert IO[Unit] finalizers to Eff context. */
+  private inline def liftFinalizer(poll: Poll[Open]): Eff[IO, EmileError, Unit] =
+    Eff.liftF[IO, EmileError, Unit](IO.async_ { cb =>
+      poll.closeAsync(_ => cb(Right(())))
+    })
 
   /**
    * Create a poll handle as a managed resource.
@@ -28,15 +38,13 @@ object PollResource:
    *
    * @param fd The file descriptor to poll
    * @param loop The event loop (implicit)
-   * @return Resource that acquires and safely releases a poll handle
+   * @return Resource that acquires and safely releases a poll handle with typed error channel
    */
-  def make(fd: Int)(using loop: Loop): Resource[IO, Poll[Open]] =
+  def make(fd: Int)(using loop: Loop): Resource[Eff.Of[IO, EmileError], Poll[Open]] =
     Resource.make(
-      acquire = liftEmile(Poll.init(loop, fd))
+      acquire = LoopOwnership.ensureOwned(loop) *> Poll.init(loop, fd).eff[IO]
     )(
-      release = poll => IO.async_ { cb =>
-        poll.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 
   /**
@@ -47,15 +55,13 @@ object PollResource:
    *
    * @param socket The socket to poll (platform-specific type)
    * @param loop The event loop (implicit)
-   * @return Resource that acquires and safely releases a poll handle
+   * @return Resource that acquires and safely releases a poll handle with typed error channel
    */
-  def makeSocket(socket: Ptr[Byte])(using loop: Loop): Resource[IO, Poll[Open]] =
+  def makeSocket(socket: Ptr[Byte])(using loop: Loop): Resource[Eff.Of[IO, EmileError], Poll[Open]] =
     Resource.make(
-      acquire = liftEmile(Poll.initSocket(loop, socket))
+      acquire = LoopOwnership.ensureOwned(loop) *> Poll.initSocket(loop, socket).eff[IO]
     )(
-      release = poll => IO.async_ { cb =>
-        poll.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 
   /**
@@ -67,10 +73,10 @@ object PollResource:
    * @param events The events to poll for
    * @param callback Callback invoked when events are detected
    * @param loop The event loop (implicit)
-   * @return Resource that acquires a started poll handle
+   * @return Resource that acquires a started poll handle with typed error channel
    */
-  def started(fd: Int, events: PollEvent*)(callback: (Int, Set[PollEvent]) => Unit)(using loop: Loop): Resource[IO, Poll[Open]] =
+  def started(fd: Int, events: PollEvent*)(callback: (Int, Set[PollEvent]) => Unit)(using loop: Loop): Resource[Eff.Of[IO, EmileError], Poll[Open]] =
     make(fd).evalTap { poll =>
-      liftEmile(poll.start(events*)(callback))
+      poll.start(events*)(callback).eff[IO]
     }
 end PollResource

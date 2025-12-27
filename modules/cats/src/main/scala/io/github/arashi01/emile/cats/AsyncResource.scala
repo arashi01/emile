@@ -4,8 +4,14 @@
  */
 package io.github.arashi01.emile.cats
 
-import cats.effect.{IO, Resource}
-import io.github.arashi01.emile.{Async, EmileError, Loop, Open}
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.effect.IO
+import cats.effect.Resource
+import io.github.arashi01.emile.Async
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.Open
 
 /**
  * cats-effect Resource integration for Async handles.
@@ -19,9 +25,11 @@ import io.github.arashi01.emile.{Async, EmileError, Loop, Open}
  */
 object AsyncResource:
 
-  /** Helper to lift Either[EmileError, A] to IO[A]. */
-  private def liftEmile[A](either: Either[EmileError, A]): IO[A] =
-    either.fold(e => IO.raiseError(e), IO.pure)
+  /** Helper to convert IO[Unit] finalizers to Eff context. */
+  private inline def liftFinalizer(async: Async[Open]): Eff[IO, EmileError, Unit] =
+    Eff.liftF[IO, EmileError, Unit](IO.async_ { cb =>
+      async.closeAsync(_ => cb(Right(())))
+    })
 
   /**
    * Create an async handle as a managed resource.
@@ -31,14 +39,12 @@ object AsyncResource:
    *
    * @param callback The callback to invoke when the async is signaled
    * @param loop The event loop (implicit) - should be an integrated loop
-   * @return Resource that acquires and safely releases an async handle
+   * @return Resource that acquires and safely releases an async handle with typed error channel
    */
-  def make(callback: () => Unit)(using loop: Loop): Resource[IO, Async[Open]] =
+  def make(callback: () => Unit)(using loop: Loop): Resource[Eff.Of[IO, EmileError], Async[Open]] =
     Resource.make(
-      acquire = liftEmile(Async.init(loop)(callback))
+      acquire = LoopOwnership.ensureOwned(loop) *> Async.init(loop)(callback).eff[IO]
     )(
-      release = async => IO.async_ { cb =>
-        async.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 end AsyncResource
