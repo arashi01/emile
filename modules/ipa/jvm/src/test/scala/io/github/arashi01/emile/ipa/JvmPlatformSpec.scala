@@ -39,6 +39,7 @@ import java.net.InetSocketAddress
  * - Full roundtrip tests
  */
 class JvmPlatformSpec extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[?, A]): A =
     either.fold(err => fail(err.toString), identity)

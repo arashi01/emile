@@ -42,10 +42,10 @@ object FlowInfo:
     inline def value: Int = fi
 
     /** Get the traffic class (upper 8 bits of the 28 significant bits). */
-    def trafficClass: Int = (fi >>> 20) & 0xff
+    transparent inline def trafficClass: Int = (fi >>> 20) & 0xff
 
     /** Get the flow label (lower 20 bits). */
-    def flowLabel: Int = fi & 0xfffff
+    transparent inline def flowLabel: Int = fi & 0xfffff
 
 end FlowInfo
 
@@ -75,6 +75,6 @@ object ScopeId:
     inline def value: Int = sid
 
     /** True if this is the default (unspecified) scope. */
-    def isDefault: Boolean = sid == 0
+    transparent inline def isDefault: Boolean = sid == 0
 
 end ScopeId

@@ -16,6 +16,8 @@
 
 package io.github.arashi01.emile.ipa
 
+// scalafix:off DisableSyntax.var, DisableSyntax.while, DisableSyntax.asInstanceOf; Native FFI sockaddr manipulation
+
 import scala.scalanative.posix.arpa.inet.*
 import scala.scalanative.posix.netinet.in.*
 import scala.scalanative.posix.netinet.inOps.*

@@ -4,10 +4,11 @@
  */
 package io.github.arashi01.emile
 
+import io.github.arashi01.emile.Timeout
 import munit.FunSuite
+
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
-import io.github.arashi01.emile.Duration
 
 /**
  * Poller tests link against the real libuv runtime to validate idle/interrupt semantics.
@@ -28,7 +29,7 @@ class PollerSuite extends FunSuite:
     val timer = Timer.init(loop).toOption.get
 
     // Schedule a short timer to keep the loop active
-    val started = timer.start(Duration.millis(20), Duration.Zero)(() => ())
+    val started = timer.start(Timeout.millis(20), Timeout.Zero)(() => ())
     assert(started.isRight, s"timer start failed: $started")
 
     // With an active timer, a non-blocking poll should report Complete (loop alive)
@@ -63,7 +64,7 @@ class PollerSuite extends FunSuite:
     val poller = Poller().toOption.get
     val loop = poller.loop
     val timer = Timer.init(loop).toOption.get
-    val start = timer.start(Duration.millis(500), Duration.Zero)(() => ())
+    val start = timer.start(Timeout.millis(500), Timeout.Zero)(() => ())
     assert(start.isRight, s"timer start failed: $start")
     val ref = new AtomicReference[PollResult]()
     val latch = new CountDownLatch(1)
@@ -87,7 +88,7 @@ class PollerSuite extends FunSuite:
     val poller = Poller().toOption.get
     val loop = poller.loop
     val timer = Timer.init(loop).toOption.get
-    val start = timer.start(Duration.millis(500), Duration.Zero)(() => ())
+    val start = timer.start(Timeout.millis(500), Timeout.Zero)(() => ())
     assert(start.isRight, s"timer start failed: $start")
     val ref = new AtomicReference[PollResult]()
     val latch = new CountDownLatch(1)
@@ -126,7 +127,7 @@ class PollerSuite extends FunSuite:
     val loop = poller.loop
     val timer = Timer.init(loop).toOption.get
 
-    val _ = timer.start(Duration.millis(10), Duration.Zero)(() => ())
+    val _ = timer.start(Timeout.millis(10), Timeout.Zero)(() => ())
     val result = poller.poll(-1L)
     assertEquals(result, PollResult.Idle)
 

@@ -16,6 +16,8 @@
 
 package io.github.arashi01.emile.ipa
 
+// scalafix:off DisableSyntax.throw; compile-time macro validation throws for invalid literals
+
 import scala.quoted.*
 
 /**

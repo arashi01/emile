@@ -16,12 +16,16 @@
 
 package io.github.arashi01.emile.ipa
 
+// scalafix:off DisableSyntax.throw, DisableSyntax.asInstanceOf; JVM InetAddress interop requires these
+
+import boilerplate.nullable.*
+
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
-private def expectRight[A](either: Either[AddressError, A]): A =
+private inline def expectRight[A](either: Either[AddressError, A]): A =
   either.fold(err => throw new IllegalArgumentException(err.message), identity)
 
 /**
@@ -51,7 +55,9 @@ extension (addr: Ipv4Address)
    *   The corresponding Inet4Address
    */
   def toInetAddress: Inet4Address =
-    InetAddress.getByAddress(addr.toBytes).nn.asInstanceOf[Inet4Address]
+    InetAddress.getByAddress(addr.toBytes).option
+      .map(_.asInstanceOf[Inet4Address])
+      .getOrElse(throw new IllegalStateException("Failed to create Inet4Address"))
 
 extension (addr: Ipv6Address)
   /**
@@ -61,7 +67,9 @@ extension (addr: Ipv6Address)
    *   The corresponding Inet6Address
    */
   def toInetAddress: Inet6Address =
-    InetAddress.getByAddress(addr.toBytes).nn.asInstanceOf[Inet6Address]
+    InetAddress.getByAddress(addr.toBytes).option
+      .map(_.asInstanceOf[Inet6Address])
+      .getOrElse(throw new IllegalStateException("Failed to create Inet6Address"))
 
 extension (addr: SocketAddress)
   /**
@@ -85,9 +93,11 @@ extension (addr: SocketAddress)
  * @return
  *   The corresponding Ipv4Address
  */
-def fromInet4Address(inet: Inet4Address): Ipv4Address =
-  val bytes = inet.getAddress.nn
-  expectRight(Ipv4Address.from(bytes))
+def fromInet4Address(inet: Inet4Address | Null): Ipv4Address =
+  inet.option
+    .flatMap(i => i.getAddress.option)
+    .flatMap(bytes => Ipv4Address.from(bytes).toOption)
+    .getOrElse(throw new IllegalArgumentException("Invalid Inet4Address"))
 
 /**
  * Create an Ipv6Address from a java.net.Inet6Address.
@@ -97,9 +107,11 @@ def fromInet4Address(inet: Inet4Address): Ipv4Address =
  * @return
  *   The corresponding Ipv6Address
  */
-def fromInet6Address(inet: Inet6Address): Ipv6Address =
-  val bytes = inet.getAddress.nn
-  expectRight(Ipv6Address.from(bytes))
+def fromInet6Address(inet: Inet6Address | Null): Ipv6Address =
+  inet.option
+    .flatMap(i => i.getAddress.option)
+    .flatMap(bytes => Ipv6Address.from(bytes).toOption)
+    .getOrElse(throw new IllegalArgumentException("Invalid Inet6Address"))
 
 /**
  * Create a SocketAddress from a java.net.InetSocketAddress.
@@ -109,12 +121,16 @@ def fromInet6Address(inet: Inet6Address): Ipv6Address =
  * @return
  *   Either an error or the corresponding SocketAddress
  */
-def fromInetSocketAddress(inetSock: InetSocketAddress): Either[AddressError, SocketAddress] =
-  val port = Port.from(inetSock.getPort)
-  port.map { p =>
-    inetSock.getAddress.nn match
-      case inet4: Inet4Address =>
-        SocketAddress.v4(fromInet4Address(inet4), p)
-      case inet6: Inet6Address =>
-        SocketAddress.v6(fromInet6Address(inet6), p)
-  }
+def fromInetSocketAddress(inetSock: InetSocketAddress | Null): Either[AddressError, SocketAddress] =
+  inetSock.option.map { sock =>
+    val port = Port.from(sock.getPort)
+    port.flatMap { p =>
+      sock.getAddress.option match
+        case Some(inet4: Inet4Address) =>
+          Right(SocketAddress.v4(fromInet4Address(inet4), p))
+        case Some(inet6: Inet6Address) =>
+          Right(SocketAddress.v6(fromInet6Address(inet6), p))
+        case _ =>
+          Left(AddressError.InvalidSocketAddress("", "Invalid InetAddress"))
+    }
+  }.getOrElse(Left(AddressError.InvalidSocketAddress("null", "null input")))

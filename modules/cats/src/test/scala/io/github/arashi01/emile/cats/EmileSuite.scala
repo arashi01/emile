@@ -30,7 +30,7 @@ abstract class EmileSuite extends CatsEffectSuite:
   override implicit lazy val munitIORuntime: IORuntime =
     IORuntime
       .builder()
-      .setPollingSystem(LibuvPollingSystem)
+      .setPollingSystem(LibuvPollingSystem.default)
       .build()
 
 end EmileSuite

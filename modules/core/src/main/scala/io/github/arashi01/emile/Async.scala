@@ -4,10 +4,20 @@
  */
 package io.github.arashi01.emile
 
+import _root_.io.github.arashi01.emile.unsafe.CallbackIdUtils
+import _root_.io.github.arashi01.emile.unsafe.CallbackRegistry
+import _root_.io.github.arashi01.emile.unsafe.LibUV
+import boilerplate.nullable.*
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.ErrorCode
+import io.github.arashi01.emile.HandleState
+import io.github.arashi01.emile.HandleType
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.Open
+
+import scala.scalanative.libc.stdlib.calloc
+import scala.scalanative.libc.stdlib.free
 import scala.scalanative.unsafe.*
-import scala.scalanative.libc.stdlib.{calloc, free}
-import io.github.arashi01.emile.{EmileError, ErrorCode, HandleState, HandleType, Loop, Open}
-import _root_.io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
 
 /**
  * Async handle for cross-thread event loop wakeup.
@@ -69,19 +79,18 @@ object Async:
    */
   def init(loop: Loop)(callback: () => Unit): Either[EmileError, Async[Open]] =
     val size = LibUV.uv_handle_size(UV_ASYNC)
-    val handle = calloc(1L, size.toLong)
-    if handle == null then Left(EmileError.OutOfMemory)
-    else
+    calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
       // Initialize the handle first
       val result = LibUV.uv_async_init(loop.ptrUnsafe, handle, asyncCallback)
       if result < 0 then
         free(handle)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
-        // Now register callback and store ID in initialized handle
+        // Now register callback and store ID in initialised handle
         val callbackId = CallbackRegistry.registerLoop(loop.ptrUnsafe, callback)
         CallbackIdUtils.setCallbackId(handle, callbackId)
         Right(handle)
+    }
 
   /** Internal constructor from raw pointer. */
   private[emile] inline def apply[S <: HandleState](p: Ptr[Byte]): Async[S] = p

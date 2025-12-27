@@ -4,9 +4,9 @@
  */
 package io.github.arashi01.emile
 
-import munit.FunSuite
-import io.github.arashi01.emile.Duration
+import io.github.arashi01.emile.Timeout
 import io.github.arashi01.emile.Timer
+import munit.FunSuite
 
 /**
  * Tests for Loop operations.
@@ -14,6 +14,7 @@ import io.github.arashi01.emile.Timer
  * These tests link to and execute the real libuv library.
  */
 class LoopSuite extends FunSuite:
+// scalafix:off
 
   test("Loop.default returns a valid loop"):
     val result = Loop.default
@@ -86,7 +87,7 @@ class LoopSuite extends FunSuite:
     val result = for
       loop <- Loop.default
       _ <- loop.close // should be a no-op for default loop
-      timer <- Timer.after(loop, Duration.millis(25)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(25)) { () =>
         fired = true
         val _ = timerRef.close
       }

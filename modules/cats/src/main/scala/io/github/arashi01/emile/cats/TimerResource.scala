@@ -4,8 +4,15 @@
  */
 package io.github.arashi01.emile.cats
 
-import cats.effect.{IO, Resource}
-import io.github.arashi01.emile.{Duration, EmileError, Loop, Open, Timer}
+import boilerplate.effect.*
+import boilerplate.effect.Eff
+import cats.effect.IO
+import cats.effect.Resource
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.Open
+import io.github.arashi01.emile.Timeout
+import io.github.arashi01.emile.Timer
 
 /**
  * cats-effect Resource integration for Timer handles.
@@ -16,9 +23,11 @@ import io.github.arashi01.emile.{Duration, EmileError, Loop, Open, Timer}
  */
 object TimerResource:
 
-  /** Helper to lift Either[EmileError, A] to IO[A]. */
-  private def liftEmile[A](either: Either[EmileError, A]): IO[A] =
-    either.fold(e => IO.raiseError(e), IO.pure)
+  /** Helper to convert IO[Unit] finalizers to Eff context. */
+  private inline def liftFinalizer(timer: Timer[Open]): Eff[IO, EmileError, Unit] =
+    Eff.liftF[IO, EmileError, Unit](IO.async_ { cb =>
+      timer.closeAsync(_ => cb(Right(())))
+    })
 
   /**
    * Create a timer handle as a managed resource.
@@ -27,15 +36,13 @@ object TimerResource:
    * The finalizer awaits the close callback before returning.
    *
    * @param loop The event loop (implicit) - should be an integrated loop
-   * @return Resource that acquires and safely releases a timer
+   * @return Resource that acquires and safely releases a timer with typed error channel
    */
-  def make(using loop: Loop): Resource[IO, Timer[Open]] =
+  def make(using loop: Loop): Resource[Eff.Of[IO, EmileError], Timer[Open]] =
     Resource.make(
-      acquire = liftEmile(Timer.init(loop))
+      acquire = LoopOwnership.ensureOwned(loop) *> Timer.init(loop).eff[IO]
     )(
-      release = timer => IO.async_ { cb =>
-        timer.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 
   /**
@@ -46,15 +53,13 @@ object TimerResource:
    * @param timeout Time until the callback fires
    * @param callback The callback to invoke
    * @param loop The event loop (implicit)
-   * @return Resource that acquires a started timer
+   * @return Resource that acquires a started timer with typed error channel
    */
-  def after(timeout: Duration)(callback: () => Unit)(using loop: Loop): Resource[IO, Timer[Open]] =
+  def after(timeout: Timeout)(callback: () => Unit)(using loop: Loop): Resource[Eff.Of[IO, EmileError], Timer[Open]] =
     Resource.make(
-      acquire = liftEmile(Timer.after(loop, timeout)(callback))
+      acquire = LoopOwnership.ensureOwned(loop) *> Timer.after(loop, timeout)(callback).eff[IO]
     )(
-      release = timer => IO.async_ { cb =>
-        timer.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 
   /**
@@ -65,14 +70,12 @@ object TimerResource:
    * @param interval The repeat interval (also used for initial timeout)
    * @param callback The callback to invoke on each tick
    * @param loop The event loop (implicit)
-   * @return Resource that acquires a started repeating timer
+   * @return Resource that acquires a started repeating timer with typed error channel
    */
-  def interval(interval: Duration)(callback: () => Unit)(using loop: Loop): Resource[IO, Timer[Open]] =
+  def interval(interval: Timeout)(callback: () => Unit)(using loop: Loop): Resource[Eff.Of[IO, EmileError], Timer[Open]] =
     Resource.make(
-      acquire = liftEmile(Timer.interval(loop, interval)(callback))
+      acquire = LoopOwnership.ensureOwned(loop) *> Timer.interval(loop, interval)(callback).eff[IO]
     )(
-      release = timer => IO.async_ { cb =>
-        timer.closeAsync(_ => cb(Right(())))
-      }
+      release = liftFinalizer
     )
 end TimerResource

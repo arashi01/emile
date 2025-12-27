@@ -12,6 +12,7 @@ import munit.FunSuite
  * These tests link to and execute the real libuv library.
  */
 class AsyncSuite extends FunSuite:
+// scalafix:off
 
   test("Async.init creates a valid async handle"):
     var callbackInvoked = false
@@ -21,12 +22,15 @@ class AsyncSuite extends FunSuite:
       async <- Async.init(loop) { () =>
         callbackInvoked = true
       }
+      _ <- async.send
+      _ <- loop.run(RunMode.NoWait)
       _ = async.close
       _ <- loop.run(RunMode.Default)
       _ <- loop.close
     yield ()
 
     assert(result.isRight, s"Expected Right, got $result")
+    assert(callbackInvoked, "Async callback should have been invoked")
 
   test("Async.send wakes up the event loop"):
     var wokenUp = false
@@ -36,17 +40,23 @@ class AsyncSuite extends FunSuite:
       async <- Async.init(loop) { () =>
         wokenUp = true
       }
+      startNanos = System.nanoTime()
       // Send signal before running loop
       _ <- async.send
       // Run loop to process the signal
       _ <- loop.run(RunMode.NoWait)
+      elapsedNanos = System.nanoTime() - startNanos
       _ = async.close
       _ <- loop.run(RunMode.Default)
       _ <- loop.close
-    yield ()
+    yield elapsedNanos
 
     assert(result.isRight, s"Expected Right, got $result")
     assert(wokenUp, "Async callback should have been invoked after send")
+    result.foreach { elapsedNanos =>
+      // Allow generous slack to avoid flakiness in CI
+      assert(elapsedNanos < 200_000_000L, s"RunMode.NoWait should return promptly; took ${elapsedNanos / 1_000_000.0} ms")
+    }
 
   test("Multiple sends may coalesce"):
     var invokeCount = 0
@@ -115,7 +125,7 @@ class AsyncSuite extends FunSuite:
       timer <- Timer.init(loop)
       _ = { asyncRef = async; timerRef = timer }
       // Timer will send to async when it fires
-      _ <- timer.start(Duration.millis(10), Duration.Zero) { () =>
+      _ <- timer.start(Timeout.millis(10), Timeout.Zero) { () =>
         timerFired = true
         // Close timer after firing
         val _ = timerRef.close

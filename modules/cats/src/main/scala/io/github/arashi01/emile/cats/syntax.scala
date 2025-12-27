@@ -17,11 +17,12 @@ object syntax:
    * All emile-cats syntax.
    *
    * Exports:
-   * - Error extensions (.liftIO, .rethrowEmile, .catchEmile, .recoverEmile)
+   * - Eff conversion: .rethrow (Eff → IO raises)
+   * - IO error handling: .catchEmile, .recoverEmile
    * - Emile pattern extractor for error handlers
-   * - EmileLoop extensions (.runOnce, .runUntilComplete)
+   * - EmileLoop extensions (.runOnce, .runUntilComplete, .runNoWait)
    */
   object all:
-    export io.github.arashi01.emile.cats.{liftIO, rethrowEmile, catchEmile, recoverEmile, Emile}
-    export io.github.arashi01.emile.cats.EmileLoop.{runOnce, runUntilComplete}
+    export io.github.arashi01.emile.cats.{rethrow, catchEmile, recoverEmile, Emile}
+    export io.github.arashi01.emile.cats.EmileLoop.{runOnce, runUntilComplete, runNoWait}
 end syntax

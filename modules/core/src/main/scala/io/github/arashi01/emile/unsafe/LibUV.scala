@@ -35,6 +35,8 @@ private[emile] object LibUV:
   type PollCB = CFuncPtr3[Ptr[Byte], CInt, CInt, Unit]
   type WorkCB = CFuncPtr1[Ptr[Byte], Unit]
   type AfterWorkCB = CFuncPtr2[Ptr[Byte], CInt, Unit]
+  type SignalCB = CFuncPtr2[Ptr[Byte], CInt, Unit]
+  type GetAddrInfoCB = CFuncPtr3[Ptr[Byte], CInt, Ptr[Byte], Unit]
 
   // ==========================================================================
   // Loop functions
@@ -299,4 +301,126 @@ private[emile] object LibUV:
 
   /** Convert sockaddr to string. */
   def uv_ip_name(src: Ptr[Byte], dst: CString, size: CSize): CInt = extern
+
+  // ==========================================================================
+  // Threading functions
+  // ==========================================================================
+
+  /** Thread entry callback type. */
+  type ThreadCB = CFuncPtr1[Ptr[Byte], Unit]
+
+  /** Create a new thread. */
+  def uv_thread_create(tid: Ptr[Byte], entry: ThreadCB, arg: Ptr[Byte]): CInt = extern
+
+  /** Join a thread (wait for completion). */
+  def uv_thread_join(tid: Ptr[Byte]): CInt = extern
+
+  /** Get current thread ID. */
+  def uv_thread_self(): CUnsignedLong = extern
+
+  /** Check if two thread IDs are equal. */
+  def uv_thread_equal(t1: Ptr[Byte], t2: Ptr[Byte]): CInt = extern
+
+  // ==========================================================================
+  // Mutex functions
+  // ==========================================================================
+
+  /** Initialise a mutex. */
+  def uv_mutex_init(handle: Ptr[Byte]): CInt = extern
+
+  /** Destroy a mutex. */
+  def uv_mutex_destroy(handle: Ptr[Byte]): Unit = extern
+
+  /** Lock a mutex (blocking). */
+  def uv_mutex_lock(handle: Ptr[Byte]): Unit = extern
+
+  /** Try to lock a mutex (non-blocking). Returns 0 on success. */
+  def uv_mutex_trylock(handle: Ptr[Byte]): CInt = extern
+
+  /** Unlock a mutex. */
+  def uv_mutex_unlock(handle: Ptr[Byte]): Unit = extern
+
+  // ==========================================================================
+  // Condition variable functions
+  // ==========================================================================
+
+  /** Initialise a condition variable. */
+  def uv_cond_init(cond: Ptr[Byte]): CInt = extern
+
+  /** Destroy a condition variable. */
+  def uv_cond_destroy(cond: Ptr[Byte]): Unit = extern
+
+  /** Signal one waiting thread. */
+  def uv_cond_signal(cond: Ptr[Byte]): Unit = extern
+
+  /** Signal all waiting threads. */
+  def uv_cond_broadcast(cond: Ptr[Byte]): Unit = extern
+
+  /** Wait on a condition variable (must hold mutex). */
+  def uv_cond_wait(cond: Ptr[Byte], mutex: Ptr[Byte]): Unit = extern
+
+  /** Wait on a condition variable with timeout in nanoseconds. */
+  def uv_cond_timedwait(cond: Ptr[Byte], mutex: Ptr[Byte], timeout: CUnsignedLongLong): CInt = extern
+
+  // ==========================================================================
+  // Semaphore functions
+  // ==========================================================================
+
+  /** Initialise a semaphore with initial value. */
+  def uv_sem_init(sem: Ptr[Byte], value: CUnsignedInt): CInt = extern
+
+  /** Destroy a semaphore. */
+  def uv_sem_destroy(sem: Ptr[Byte]): Unit = extern
+
+  /** Post (increment) a semaphore. */
+  def uv_sem_post(sem: Ptr[Byte]): Unit = extern
+
+  /** Wait (decrement) on a semaphore (blocking). */
+  def uv_sem_wait(sem: Ptr[Byte]): Unit = extern
+
+  /** Try to wait on a semaphore (non-blocking). Returns 0 on success. */
+  def uv_sem_trywait(sem: Ptr[Byte]): CInt = extern
+
+  // ==========================================================================
+  // Signal functions
+  // ==========================================================================
+
+  /** Initialise a signal handle. */
+  def uv_signal_init(loop: Ptr[Byte], handle: Ptr[Byte]): CInt = extern
+
+  /** Start watching for the specified signal. */
+  def uv_signal_start(handle: Ptr[Byte], cb: SignalCB, signum: CInt): CInt = extern
+
+  /** Start watching for the specified signal (one-shot). */
+  def uv_signal_start_oneshot(handle: Ptr[Byte], cb: SignalCB, signum: CInt): CInt = extern
+
+  /** Stop watching for signals. */
+  def uv_signal_stop(handle: Ptr[Byte]): CInt = extern
+
+  // ==========================================================================
+  // DNS functions (getaddrinfo)
+  // ==========================================================================
+
+  /**
+   * Resolve a hostname asynchronously.
+   *
+   * @param loop Event loop
+   * @param req Request object (preallocated via uv_req_size(UV_GETADDRINFO))
+   * @param cb Callback invoked when resolution completes
+   * @param node Hostname to resolve (or null for wildcard)
+   * @param service Service name or port number (or null)
+   * @param hints addrinfo hints structure (or null)
+   * @return 0 on success, negative error code on failure
+   */
+  def uv_getaddrinfo(
+      loop: Ptr[Byte],
+      req: Ptr[Byte],
+      cb: GetAddrInfoCB,
+      node: CString,
+      service: CString,
+      hints: Ptr[Byte]
+  ): CInt = extern
+
+  /** Free the addrinfo linked list returned by uv_getaddrinfo. */
+  def uv_freeaddrinfo(ai: Ptr[Byte]): Unit = extern
 end LibUV

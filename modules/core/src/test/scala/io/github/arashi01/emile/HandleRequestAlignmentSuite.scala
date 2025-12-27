@@ -4,10 +4,11 @@
  */
 package io.github.arashi01.emile
 
-import munit.FunSuite
-import scala.scalanative.unsafe.*
 import io.github.arashi01.emile.unsafe.LibUV
+import munit.FunSuite
+
 import scala.scalanative.runtime.Platform
+import scala.scalanative.unsafe.*
 
 /**
  * Alignment checks to ensure our enum values match libuv's runtime enums.

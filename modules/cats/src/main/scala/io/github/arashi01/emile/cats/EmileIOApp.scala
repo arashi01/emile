@@ -4,9 +4,14 @@
  */
 package io.github.arashi01.emile.cats
 
+import boilerplate.effect.Eff
+import cats.effect.IO
 import cats.effect.IOApp
+import cats.effect.Resource
 import cats.effect.unsafe.PollingSystem
-import io.github.arashi01.emile.{Loop, LoopConfig}
+import io.github.arashi01.emile.EmileError
+import io.github.arashi01.emile.Loop
+import io.github.arashi01.emile.LoopConfig
 
 /**
  * IOApp trait that uses libuv as the polling backend.
@@ -39,15 +44,11 @@ import io.github.arashi01.emile.{Loop, LoopConfig}
  * {{{
  * EmileIOApp.withLoop { loop =>
  *   // Create handles, start timers, etc.
- *   Tcp.init(loop)
- * }
- * }}}
- *
- * == Configuration ==
- *
- * Override `loopConfig` to customize the libuv loop:
- *
- * {{{
+ *   IO.fromEither(Tcp.init(loop))
+  * {{
+  * val createTcp: IO[Either[EmileError, Tcp[Open]]] =
+  *   EmileIOApp.withLoop { loop => IO.pure(Tcp.init(loop)) }
+  * }}}
  * object MyApp extends EmileIOApp:
  *   override def loopConfig: LoopConfig =
  *     LoopConfig.empty
@@ -58,6 +59,9 @@ import io.github.arashi01.emile.{Loop, LoopConfig}
  * }}}
  */
 trait EmileIOApp extends IOApp:
+  private lazy val emilePollingSystem: PollingSystem =
+    LibuvPollingSystem(loopConfig)
+
   /**
    * Override to customize the libuv loop configuration.
    *
@@ -71,8 +75,7 @@ trait EmileIOApp extends IOApp:
    * Uses libuv via `LibuvPollingSystem`.
    */
   override protected def pollingSystem: PollingSystem =
-    LibuvPollingSystem.configure(loopConfig)
-    LibuvPollingSystem
+    emilePollingSystem
 
 object EmileIOApp:
   /**
@@ -82,18 +85,19 @@ object EmileIOApp:
    * The callback receives the loop owned by the current worker thread.
    *
    * {{{
-   * val createTcp: IO[Either[EmileError, Tcp[Open]]] =
-   *   IO.async_ { cb =>
-   *     EmileIOApp.withLoop { loop =>
-   *       cb(Right(Tcp.init(loop)))
-   *     }
+   * val createTcp: Eff[IO, EmileError, Tcp[Open]] =
+   *   EmileIOApp.withLoop { loop =>
+   *     Tcp.init(loop).eff[IO]
    *   }
    * }}}
    *
    * @param f Callback that receives the loop
    */
-  def withLoop(f: Loop => Unit): Unit =
-    // This will be called from within an IO effect, so we need access to the
-    // polling context. For now, we use a simple thread-local approach.
-    // In production, this should integrate with cats-effect's polling context.
-    ???
+  def withLoop[A](f: Loop => Eff[IO, EmileError, A]): Eff[IO, EmileError, A] =
+    loopResource.use(f)
+
+  /**
+   * Access the current worker loop as a Resource for compositional use.
+   */
+  def loopResource: Resource[Eff.Of[IO, EmileError], Loop] =
+    Resource.eval(LibuvPollingSystem.LoopAccess.get).flatMap(_.loop)

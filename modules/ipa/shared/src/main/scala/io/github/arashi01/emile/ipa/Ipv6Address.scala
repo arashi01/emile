@@ -16,6 +16,10 @@
 
 package io.github.arashi01.emile.ipa
 
+// scalafix:off DisableSyntax.var, DisableSyntax.while, DisableSyntax.return; performance-critical IPv6 parsing
+
+import boilerplate.nullable.*
+
 /**
  * IPv6 address represented as two 64-bit integers.
  *
@@ -64,31 +68,33 @@ object Ipv6Address:
   def from(value: String): Either[AddressError, Ipv6Address] =
     parseIpv6(value)
 
-  private def parseIpv6(value: String): Either[AddressError, Ipv6Address] =
-    if value == null || value.isEmpty then Left(AddressError.InvalidIpv6(String.valueOf(value), "empty input"))
-    else
-      try
-        parseIpv6Groups(value).flatMap { groups =>
-          val invalidGroup = groups.find(g => g < 0 || g > 0xffff)
-          invalidGroup match
-            case Some(g) =>
-              Left(AddressError.InvalidIpv6(value, s"group value $g out of range"))
-            case None =>
-              val high =
-                (groups(0).toLong << 48) |
-                  (groups(1).toLong << 32) |
-                  (groups(2).toLong << 16) |
-                  groups(3).toLong
-              val low =
-                (groups(4).toLong << 48) |
-                  (groups(5).toLong << 32) |
-                  (groups(6).toLong << 16) |
-                  groups(7).toLong
-              Right((high, low))
-        }
-      catch
-        case _: NumberFormatException =>
-          Left(AddressError.InvalidIpv6(value, "invalid hexadecimal group"))
+  private def parseIpv6(value: String | Null): Either[AddressError, Ipv6Address] =
+    value.either(AddressError.InvalidIpv6("null", "null input")).flatMap { v =>
+      if v.isEmpty then Left(AddressError.InvalidIpv6(v, "empty input"))
+      else
+        try
+          parseIpv6Groups(v).flatMap { groups =>
+            val invalidGroup = groups.find(g => g < 0 || g > 0xffff)
+            invalidGroup match
+              case Some(g) =>
+                Left(AddressError.InvalidIpv6(v, s"group value $g out of range"))
+              case None =>
+                val high =
+                  (groups(0).toLong << 48) |
+                    (groups(1).toLong << 32) |
+                    (groups(2).toLong << 16) |
+                    groups(3).toLong
+                val low =
+                  (groups(4).toLong << 48) |
+                    (groups(5).toLong << 32) |
+                    (groups(6).toLong << 16) |
+                    groups(7).toLong
+                Right((high, low))
+          }
+        catch
+          case _: NumberFormatException =>
+            Left(AddressError.InvalidIpv6(v, "invalid hexadecimal group"))
+    }
 
   private def parseIpv6Groups(value: String): Either[AddressError, Array[Int]] =
     // Check for invalid patterns first
@@ -172,10 +178,10 @@ object Ipv6Address:
 
   extension (addr: Ipv6Address)
     /** Get the high 64 bits. */
-    inline def highBits: Long = addr._1
+    transparent inline def highBits: Long = addr._1
 
     /** Get the low 64 bits. */
-    inline def lowBits: Long = addr._2
+    transparent inline def lowBits: Long = addr._2
 
     /** Convert to network order byte array. */
     def toBytes: Array[Byte] =
@@ -248,20 +254,20 @@ object Ipv6Address:
       out
 
     /** True if this is the loopback address (::1). */
-    def isLoopback: Boolean = addr._1 == 0L && addr._2 == 1L
+    transparent inline def isLoopback: Boolean = addr._1 == 0L && addr._2 == 1L
 
     /** True if this is a link-local address (fe80::/10). */
-    def isLinkLocal: Boolean = (addr._1 >>> 54) == 0x3fa // fe80 >> 6 = 0x3FA
+    transparent inline def isLinkLocal: Boolean = (addr._1 >>> 54) == 0x3fa // fe80 >> 6 = 0x3FA
 
     /** True if this is a multicast address (ff00::/8). */
-    def isMulticast: Boolean = (addr._1 >>> 56) == 0xff
+    transparent inline def isMulticast: Boolean = (addr._1 >>> 56) == 0xff
 
     /** True if this is an IPv4-mapped IPv6 address (::ffff:0:0/96). */
-    def isIpv4Mapped: Boolean =
+    transparent inline def isIpv4Mapped: Boolean =
       addr._1 == 0L && (addr._2 >>> 32) == 0xffffL
 
     /** True if this is the wildcard address (::). */
-    def isWildcard: Boolean = addr._1 == 0L && addr._2 == 0L
+    transparent inline def isWildcard: Boolean = addr._1 == 0L && addr._2 == 0L
 
     /** Extract the IPv4 address if this is an IPv4-mapped address. */
     def toIpv4: Option[Ipv4Address] =

@@ -5,6 +5,7 @@
 package io.github.arashi01.emile
 
 import munit.FunSuite
+
 import scala.scalanative.posix.unistd
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
@@ -16,6 +17,7 @@ import scala.scalanative.unsigned.*
  * We use pipes for testing as they're portable across Unix systems.
  */
 class PollSuite extends FunSuite:
+// scalafix:off
 
   /** Helper to create a pipe and run test code with automatic cleanup. */
   private def withPipe[A](test: (CInt, CInt) => A): A =
@@ -31,7 +33,7 @@ class PollSuite extends FunSuite:
         val _ = unistd.close(writeFd)
 
   test("Poll.init creates a valid poll handle"):
-    withPipe { (readFd, writeFd) =>
+    withPipe { (readFd, _) =>
       val result = for
         loop <- Loop.create
         poll <- Poll.init(loop, readFd)
@@ -73,7 +75,7 @@ class PollSuite extends FunSuite:
     }
 
   test("Poll detects writable event"):
-    withPipe { (readFd, writeFd) =>
+    withPipe { (_, writeFd) =>
       var writableDetected = false
       var pollRef: Poll[Open] = null.asInstanceOf[Poll[Open]]
 
@@ -123,7 +125,7 @@ class PollSuite extends FunSuite:
     }
 
   test("Poll Handle operations work"):
-    withPipe { (readFd, writeFd) =>
+    withPipe { (readFd, _) =>
       val result = for
         loop <- Loop.create
         poll <- Poll.init(loop, readFd)
@@ -156,7 +158,7 @@ class PollSuite extends FunSuite:
   test("restarting poll does not leak callbacks"):
     import io.github.arashi01.emile.unsafe.CallbackRegistry
 
-    withPipe { (readFd, writeFd) =>
+    withPipe { (readFd, _) =>
       val result = for
         loop <- Loop.create
         poll <- Poll.init(loop, readFd)

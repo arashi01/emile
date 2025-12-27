@@ -35,6 +35,7 @@ import munit.FunSuite
  * - Ordering: unsigned comparison
  */
 class Ipv6AddressSpec extends FunSuite:
+// scalafix:off
 
   private def expectRight[A](either: Either[AddressError, A]): A =
     either.fold(err => fail(err.message), identity)

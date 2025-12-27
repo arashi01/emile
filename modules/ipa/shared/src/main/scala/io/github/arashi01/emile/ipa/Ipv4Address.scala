@@ -16,6 +16,8 @@
 
 package io.github.arashi01.emile.ipa
 
+import boilerplate.nullable.*
+
 import scala.compiletime.error
 
 /**
@@ -69,36 +71,38 @@ object Ipv4Address:
   def from(value: String): Either[AddressError, Ipv4Address] =
     parseIpv4(value)
 
-  private def parseIpv4(value: String): Either[AddressError, Ipv4Address] =
-    if value == null || value.isEmpty then
-      Left(AddressError.InvalidIpv4(String.valueOf(value), "empty input"))
-    else if value.startsWith(".") || value.endsWith(".") then
-      Left(AddressError.InvalidIpv4(value, "leading or trailing dot"))
-    else if value.contains("..") then
-      Left(AddressError.InvalidIpv4(value, "consecutive dots"))
-    else
-      val parts = value.split('.')
-      if parts.length != 4 then
-        Left(AddressError.InvalidIpv4(value, s"expected 4 octets, got ${parts.length}"))
+  private def parseIpv4(value: String | Null): Either[AddressError, Ipv4Address] =
+    value.either(AddressError.InvalidIpv4("null", "null input")).flatMap { v =>
+      if v.isEmpty then
+        Left(AddressError.InvalidIpv4(v, "empty input"))
+      else if v.startsWith(".") || v.endsWith(".") then
+        Left(AddressError.InvalidIpv4(v, "leading or trailing dot"))
+      else if v.contains("..") then
+        Left(AddressError.InvalidIpv4(v, "consecutive dots"))
       else
-        try
-          val octets = parts.map { s =>
-            val n = s.toInt
-            if n < 0 || n > 255 then
-              throw new IllegalArgumentException(s"octet $n out of range")
-            n
-          }
-          Right(
-            ((octets(0) & 0xff) << 24) |
-              ((octets(1) & 0xff) << 16) |
-              ((octets(2) & 0xff) << 8) |
-              (octets(3) & 0xff)
-          )
-        catch
-          case _: NumberFormatException =>
-            Left(AddressError.InvalidIpv4(value, "invalid octet format"))
-          case e: IllegalArgumentException =>
-            Left(AddressError.InvalidIpv4(value, e.getMessage.nn))
+        val parts = v.split('.')
+        if parts.length != 4 then
+          Left(AddressError.InvalidIpv4(v, s"expected 4 octets, got ${parts.length}"))
+        else
+          try
+            val octets = parts.map { s =>
+              val n = s.toInt
+              if n < 0 || n > 255 then
+                throw new IllegalArgumentException(s"octet $n out of range") // scalafix:ok; internal try/catch control flow
+              n
+            }
+            Right(
+              ((octets(0) & 0xff) << 24) |
+                ((octets(1) & 0xff) << 16) |
+                ((octets(2) & 0xff) << 8) |
+                (octets(3) & 0xff)
+            )
+          catch
+            case _: NumberFormatException =>
+              Left(AddressError.InvalidIpv4(v, "invalid octet format"))
+            case e: IllegalArgumentException =>
+              Left(AddressError.InvalidIpv4(v, e.getMessage))
+    }
 
   /**
    * Construct from four octets with compile-time validation for literals.
@@ -173,19 +177,19 @@ object Ipv4Address:
 
   extension (addr: Ipv4Address)
     /** Get the underlying 32-bit integer. */
-    inline def toInt: Int = addr
+    transparent inline def toInt: Int = addr
 
     /** Get the first octet. */
-    inline def octet1: Int = (addr >>> 24) & 0xff
+    transparent inline def octet1: Int = (addr >>> 24) & 0xff
 
     /** Get the second octet. */
-    inline def octet2: Int = (addr >>> 16) & 0xff
+    transparent inline def octet2: Int = (addr >>> 16) & 0xff
 
     /** Get the third octet. */
-    inline def octet3: Int = (addr >>> 8) & 0xff
+    transparent inline def octet3: Int = (addr >>> 8) & 0xff
 
     /** Get the fourth octet. */
-    inline def octet4: Int = addr & 0xff
+    transparent inline def octet4: Int = addr & 0xff
 
     /** Convert to network order byte array. */
     def toBytes: Array[Byte] =
@@ -209,25 +213,25 @@ object Ipv4Address:
       sb.toString
 
     /** True if this is a loopback address (127.x.x.x). */
-    def isLoopback: Boolean = octet1 == 127
+    transparent inline def isLoopback: Boolean = octet1 == 127
 
     /** True if this is a private address (10.x.x.x, 172.16-31.x.x, 192.168.x.x). */
-    def isPrivate: Boolean =
+    transparent inline def isPrivate: Boolean =
       octet1 == 10 ||
         (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
         (octet1 == 192 && octet2 == 168)
 
     /** True if this is a link-local address (169.254.x.x). */
-    def isLinkLocal: Boolean = octet1 == 169 && octet2 == 254
+    transparent inline def isLinkLocal: Boolean = octet1 == 169 && octet2 == 254
 
     /** True if this is a multicast address (224-239.x.x.x). */
-    def isMulticast: Boolean = octet1 >= 224 && octet1 <= 239
+    transparent inline def isMulticast: Boolean = octet1 >= 224 && octet1 <= 239
 
     /** True if this is the wildcard address (0.0.0.0). */
-    def isWildcard: Boolean = addr == 0
+    transparent inline def isWildcard: Boolean = addr == 0
 
     /** True if this is the broadcast address (255.255.255.255). */
-    def isBroadcast: Boolean = addr == 0xffffffff
+    transparent inline def isBroadcast: Boolean = addr == 0xffffffff
 
     private def appendDec(out: Appendable, value: Int): Unit =
       out.append(java.lang.Integer.toString(value))

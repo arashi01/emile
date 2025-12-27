@@ -5,6 +5,7 @@
 package io.github.arashi01.emile
 
 import munit.FunSuite
+
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -13,6 +14,7 @@ import scala.collection.mutable.ArrayBuffer
  * These tests link to and execute the real libuv library.
  */
 class TimerSuite extends FunSuite:
+// scalafix:off
 
   test("Timer.init creates a valid timer"):
     val result = for
@@ -33,7 +35,7 @@ class TimerSuite extends FunSuite:
       loop <- Loop.create
       timer <- Timer.init(loop)
       _ = { timerRef = timer }
-      _ <- timer.start(Duration.millis(10), Duration.Zero) { () =>
+      _ <- timer.start(Timeout.millis(10), Timeout.Zero) { () =>
         fired = true
         // Close timer after it fires (one-shot)
         val _ = timerRef.close
@@ -51,7 +53,7 @@ class TimerSuite extends FunSuite:
 
     val result = for
       loop <- Loop.create
-      timer <- Timer.after(loop, Duration.millis(5)) { () =>
+      timer <- Timer.after(loop, Timeout.millis(5)) { () =>
         fired = true
         val _ = timerRef.close
       }
@@ -72,7 +74,7 @@ class TimerSuite extends FunSuite:
       loop <- Loop.create
       timer <- Timer.init(loop)
       _ = { timerRef = timer }
-      _ <- timer.start(Duration.millis(5), Duration.millis(5)) { () =>
+      _ <- timer.start(Timeout.millis(5), Timeout.millis(5)) { () =>
         count += 1
         fireCount += count
         if count >= 3 then
@@ -95,7 +97,7 @@ class TimerSuite extends FunSuite:
     val result = for
       loop <- Loop.create
       timer <- Timer.init(loop)
-      _ <- timer.start(Duration.millis(100), Duration.Zero) { () =>
+      _ <- timer.start(Timeout.millis(100), Timeout.Zero) { () =>
         fired = true
       }
       _ <- timer.stop
@@ -112,7 +114,7 @@ class TimerSuite extends FunSuite:
     val result = for
       loop <- Loop.create
       timer <- Timer.init(loop)
-      _ = timer.setRepeat(Duration.millis(100))
+      _ = timer.setRepeat(Timeout.millis(100))
       interval = timer.repeatInterval
       _ = timer.close
       _ <- loop.run(RunMode.Default)
@@ -128,7 +130,7 @@ class TimerSuite extends FunSuite:
     val result = for
       loop <- Loop.create
       timer <- Timer.init(loop)
-      _ <- timer.start(Duration.millis(1000), Duration.Zero)(() => ())
+      _ <- timer.start(Timeout.millis(1000), Timeout.Zero)(() => ())
       dueIn = timer.dueIn
       _ <- timer.stop
       _ = timer.close
@@ -149,7 +151,7 @@ class TimerSuite extends FunSuite:
       timer <- Timer.init(loop)
       // Test Handle operations
       isActive1 = timer.isActive
-      _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
+      _ <- timer.start(Timeout.millis(100), Timeout.Zero)(() => ())
       isActive2 = timer.isActive
       hasRef1 = timer.hasRef
       _ = timer.unref
@@ -186,15 +188,15 @@ class TimerSuite extends FunSuite:
       timer2 <- Timer.init(loop)
       timer3 <- Timer.init(loop)
       _ = { timer1Ref = timer1; timer2Ref = timer2; timer3Ref = timer3 }
-      _ <- timer3.start(Duration.millis(30), Duration.Zero) { () =>
+      _ <- timer3.start(Timeout.millis(30), Timeout.Zero) { () =>
         order += 3
         val _ = timer3Ref.close
       }
-      _ <- timer1.start(Duration.millis(10), Duration.Zero) { () =>
+      _ <- timer1.start(Timeout.millis(10), Timeout.Zero) { () =>
         order += 1
         val _ = timer1Ref.close
       }
-      _ <- timer2.start(Duration.millis(20), Duration.Zero) { () =>
+      _ <- timer2.start(Timeout.millis(20), Timeout.Zero) { () =>
         order += 2
         val _ = timer2Ref.close
       }
@@ -216,11 +218,11 @@ class TimerSuite extends FunSuite:
       // Record initial registry size
       initialSize = CallbackRegistry.size(loop.ptrUnsafe)
       // Start timer multiple times - should not grow registry
-      _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
+      _ <- timer.start(Timeout.millis(100), Timeout.Zero)(() => ())
       sizeAfterFirst = CallbackRegistry.size(loop.ptrUnsafe)
-      _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
+      _ <- timer.start(Timeout.millis(100), Timeout.Zero)(() => ())
       sizeAfterSecond = CallbackRegistry.size(loop.ptrUnsafe)
-      _ <- timer.start(Duration.millis(100), Duration.Zero)(() => ())
+      _ <- timer.start(Timeout.millis(100), Timeout.Zero)(() => ())
       sizeAfterThird = CallbackRegistry.size(loop.ptrUnsafe)
       _ <- timer.stop
       _ = timer.close

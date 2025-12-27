@@ -4,12 +4,22 @@
  */
 package io.github.arashi01.emile
 
+import boilerplate.nullable.*
+import io.github.arashi01.emile.ipa.SocketAddress
+import io.github.arashi01.emile.ipa.fromSockAddr
+import io.github.arashi01.emile.ipa.toSockAddr
+import io.github.arashi01.emile.unsafe.CallbackIdUtils
+import io.github.arashi01.emile.unsafe.CallbackRegistry
+import io.github.arashi01.emile.unsafe.LibUV
+
+import scala.scalanative.libc.stdlib.calloc
+import scala.scalanative.libc.stdlib.free
+import scala.scalanative.libc.stdlib.malloc
+import scala.scalanative.posix.sys.socket.sockaddr
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
-import scala.scalanative.libc.stdlib.{malloc, calloc, free}
-import scala.scalanative.posix.sys.socket.sockaddr
-import io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
-import io.github.arashi01.emile.ipa.{SocketAddress, fromSockAddr, toSockAddr}
+
+// scalafix:off; libuv FFI TCP handle
 
 /**
  * TCP handle for network communication.
@@ -20,7 +30,7 @@ import io.github.arashi01.emile.ipa.{SocketAddress, fromSockAddr, toSockAddr}
  * - Both: read and write data
  *
  * The type parameter `S` tracks the handle's lifecycle state at compile time:
- * - `Tcp[Open]`: Handle is initialized and ready for operations
+ * - `Tcp[Open]`: Handle is initialised and ready for operations
  * - `Tcp[Closed]`: Handle has been closed, operations are prevented
  *
  * == Server Example ==
@@ -87,19 +97,18 @@ object Tcp:
    * This is the most efficient path when no configuration overrides are needed.
    *
    * @param loop The event loop
-   * @return Either an error or the initialized TCP handle in Open state
+   * @return Either an error or the initialised TCP handle in Open state
    */
   def init(loop: Loop): Either[EmileError, Tcp[Open]] =
     val size = LibUV.uv_handle_size(UV_TCP)
-    val handle = calloc(1L, size.toLong)
-    if handle == null then Left(EmileError.OutOfMemory)
-    else
+    calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
       val result = LibUV.uv_tcp_init(loop.ptrUnsafe, handle)
       if result < 0 then
         free(handle)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
         Right(handle)
+    }
 
   /**
    * Initialize a new TCP handle with the specified configuration overrides.
@@ -112,16 +121,14 @@ object Tcp:
    *
    * @param loop The event loop
    * @param config TCP configuration overrides
-   * @return Either an error or the initialized TCP handle in Open state
+   * @return Either an error or the initialised TCP handle in Open state
    */
   def init(loop: Loop, config: TcpConfig): Either[EmileError, Tcp[Open]] =
     // Fast path: no handle overrides = use direct init
     if !config.hasHandleOverrides then init(loop)
     else
       val size = LibUV.uv_handle_size(UV_TCP)
-      val handle = calloc(1L, size.toLong)
-      if handle == null then Left(EmileError.OutOfMemory)
-      else
+      calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
         val result = LibUV.uv_tcp_init(loop.ptrUnsafe, handle)
         if result < 0 then
           free(handle)
@@ -135,6 +142,7 @@ object Tcp:
               Left(err)
             case Right(_) =>
               Right(tcp)
+      }
 
   /** Internal constructor from raw pointer. */
   private[emile] inline def apply[S <: HandleState](p: Ptr[Byte]): Tcp[S] = p
@@ -245,7 +253,7 @@ object Tcp:
      * Accept an incoming connection.
      *
      * This must be called from the listen callback. The client handle
-     * must be a newly initialized (not yet connected) TCP handle.
+     * must be a newly initialised (not yet connected) TCP handle.
      *
      * @param client The TCP handle to accept the connection into
      * @return Either an error or success
@@ -269,27 +277,26 @@ object Tcp:
         val sockaddr = address.toSockAddr
         val loopPtr = LibUV.uv_handle_get_loop(tcp)
         val reqSize = LibUV.uv_req_size(UV_CONNECT)
-        val req = malloc(reqSize)
-        if req == null then Left(EmileError.OutOfMemory)
-        else
+        malloc(reqSize).either(EmileError.OutOfMemory).flatMap { req =>
           // Store callback in request's data field
           val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
-          val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
-          if ctx == null then
-            val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-            free(req)
-            Left(EmileError.OutOfMemory)
-          else
-            LibUV.uv_req_set_data(req, ctx)
-
-            val result = LibUV.uv_tcp_connect(req, tcp, sockaddr.asInstanceOf[Ptr[Byte]], connectCallback)
-            if result < 0 then
+          CallbackRegistry.encodeRequest(loopPtr, callbackId).option match
+            case None =>
               val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-              CallbackRegistry.freeRequest(ctx)
               free(req)
-              Left(EmileError.fromErrorCode(ErrorCode(result)))
-            else
-              Right(())
+              Left(EmileError.OutOfMemory)
+            case Some(ctx) =>
+              LibUV.uv_req_set_data(req, ctx)
+
+              val result = LibUV.uv_tcp_connect(req, tcp, sockaddr.asInstanceOf[Ptr[Byte]], connectCallback)
+              if result < 0 then
+                val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+                CallbackRegistry.freeRequest(ctx)
+                free(req)
+                Left(EmileError.fromErrorCode(ErrorCode(result)))
+              else
+                Right(())
+        }
 
     /**
      * Start reading data from the connection.
@@ -345,48 +352,47 @@ object Tcp:
       if data.isEmpty then Right(())
       else
         val reqSize = LibUV.uv_req_size(UV_WRITE)
-        val req = malloc(reqSize)
-        if req == null then Left(EmileError.OutOfMemory)
-        else
+        malloc(reqSize).either(EmileError.OutOfMemory).flatMap { req =>
           val loopPtr = LibUV.uv_handle_get_loop(tcp)
           // Allocate buffer for the data
-          val dataPtr = malloc(data.length.toCSize)
-          if dataPtr == null then
-            free(req)
-            Left(EmileError.OutOfMemory)
-          else
-            // Copy data to native memory
-            var i = 0
-            while i < data.length do
-              !(dataPtr + i) = data(i)
-              i += 1
-
-            // uv_write copies uv_buf_t contents, so stack allocation is safe; dataPtr must live until callback
-            val buf = stackalloc[LibUV.Buffer](1)
-            buf._1 = dataPtr
-            buf._2 = data.length.toCSize
-
-            // Store callback and cleanup info in request
-            val writeData = (callback, dataPtr)
-            val callbackId = CallbackRegistry.registerLoop(loopPtr, writeData)
-            val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
-            if ctx == null then
-              val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-              free(dataPtr)
+          malloc(data.length.toCSize).option match
+            case None =>
               free(req)
               Left(EmileError.OutOfMemory)
-            else
-              LibUV.uv_req_set_data(req, ctx)
+            case Some(dataPtr) =>
+              // Copy data to native memory
+              var i = 0
+              while i < data.length do
+                !(dataPtr + i) = data(i)
+                i += 1
 
-              val result = LibUV.uv_write(req, tcp, buf, 1.toUInt, writeCallback)
-              if result < 0 then
-                val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-                CallbackRegistry.freeRequest(ctx)
-                free(dataPtr)
-                free(req)
-                Left(EmileError.fromErrorCode(ErrorCode(result)))
-              else
-                Right(())
+              // uv_write copies uv_buf_t contents, so stack allocation is safe; dataPtr must live until callback
+              val buf = stackalloc[LibUV.Buffer](1)
+              buf._1 = dataPtr
+              buf._2 = data.length.toCSize
+
+              // Store callback and cleanup info in request
+              val writeData = (callback, dataPtr)
+              val callbackId = CallbackRegistry.registerLoop(loopPtr, writeData)
+              CallbackRegistry.encodeRequest(loopPtr, callbackId).option match
+                case None =>
+                  val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+                  free(dataPtr)
+                  free(req)
+                  Left(EmileError.OutOfMemory)
+                case Some(ctx) =>
+                  LibUV.uv_req_set_data(req, ctx)
+
+                  val result = LibUV.uv_write(req, tcp, buf, 1.toUInt, writeCallback)
+                  if result < 0 then
+                    val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+                    CallbackRegistry.freeRequest(ctx)
+                    free(dataPtr)
+                    free(req)
+                    Left(EmileError.fromErrorCode(ErrorCode(result)))
+                  else
+                    Right(())
+        }
 
     /**
      * Write a string to the connection (UTF-8 encoded).
@@ -408,27 +414,26 @@ object Tcp:
      */
     def shutdown(callback: Int => Unit = _ => ()): Either[EmileError, Unit] =
       val reqSize = LibUV.uv_req_size(UV_SHUTDOWN)
-      val req = malloc(reqSize)
-      if req == null then Left(EmileError.OutOfMemory)
-      else
+      malloc(reqSize).either(EmileError.OutOfMemory).flatMap { req =>
         val loopPtr = LibUV.uv_handle_get_loop(tcp)
         val callbackId = CallbackRegistry.registerLoop(loopPtr, callback)
-        val ctx = CallbackRegistry.encodeRequest(loopPtr, callbackId)
-        if ctx == null then
-          val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-          free(req)
-          Left(EmileError.OutOfMemory)
-        else
-          LibUV.uv_req_set_data(req, ctx)
-
-          val result = LibUV.uv_shutdown(req, tcp, shutdownCallback)
-          if result < 0 then
+        CallbackRegistry.encodeRequest(loopPtr, callbackId).option match
+          case None =>
             val _ = CallbackRegistry.unregister(loopPtr, callbackId)
-            CallbackRegistry.freeRequest(ctx)
             free(req)
-            Left(EmileError.fromErrorCode(ErrorCode(result)))
-          else
-            Right(())
+            Left(EmileError.OutOfMemory)
+          case Some(ctx) =>
+            LibUV.uv_req_set_data(req, ctx)
+
+            val result = LibUV.uv_shutdown(req, tcp, shutdownCallback)
+            if result < 0 then
+              val _ = CallbackRegistry.unregister(loopPtr, callbackId)
+              CallbackRegistry.freeRequest(ctx)
+              free(req)
+              Left(EmileError.fromErrorCode(ErrorCode(result)))
+            else
+              Right(())
+      }
 
     /**
      * Enable/disable TCP_NODELAY (disable Nagle's algorithm).
@@ -477,7 +482,7 @@ object Tcp:
      * Applies:
      * - noDelay: TCP_NODELAY setting (if specified)
      * - keepAlive: TCP keep-alive settings (if specified)
-     * - simultaneousAccepts: accept queue behavior (if specified)
+     * - simultaneousAccepts: accept queue behaviour (if specified)
      *
      * Note: reusePort and ipv6Only are applied during bind, not here.
      *

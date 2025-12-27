@@ -16,6 +16,8 @@
 
 package io.github.arashi01.emile.ipa
 
+import boilerplate.nullable.*
+
 import scala.compiletime.error
 
 /**
@@ -64,6 +66,34 @@ object Port:
   /** Wildcard port (0) - lets the OS choose an ephemeral port. */
   val Wildcard: Port = 0
 
+  // =========================================================================
+  // Well-Known Ports
+  // =========================================================================
+
+  /** SSH port. */
+  inline def SSH: Port = 22
+
+  /** DNS port. */
+  inline def DNS: Port = 53
+
+  /** HTTP port. */
+  inline def HTTP: Port = 80
+
+  /** HTTPS port. */
+  inline def HTTPS: Port = 443
+
+  /** MySQL default port. */
+  inline def MySQL: Port = 3306
+
+  /** PostgreSQL default port. */
+  inline def PostgreSQL: Port = 5432
+
+  /** Redis default port. */
+  inline def Redis: Port = 6379
+
+  /** Microsoft SQL Server default port. */
+  inline def SQLServer: Port = 1433
+
   /**
    * Construct a Port from a literal integer with compile-time validation.
    *
@@ -92,15 +122,15 @@ object Port:
    * Parse a Port from a string representation with validation and error
    * detail.
    */
-  def from(value: String): Either[AddressError, Port] =
-    if value == null then Left(AddressError.InvalidPortString("null", "null input"))
-    else
-      val trimmed = value.trim
-      if trimmed.isEmpty then Left(AddressError.InvalidPortString(value, "empty input"))
+  def from(value: String | Null): Either[AddressError, Port] =
+    value.either(AddressError.InvalidPortString("null", "null input")).flatMap { v =>
+      val trimmed = v.trim
+      if trimmed.isEmpty then Left(AddressError.InvalidPortString(v, "empty input"))
       else
         scala.util.Try(trimmed.toInt).toOption match
           case Some(n) => from(n)
-          case None    => Left(AddressError.InvalidPortString(value, "non-numeric input"))
+          case None    => Left(AddressError.InvalidPortString(v, "non-numeric input"))
+    }
 
   /**
    * Construct a Port from an integer without validation.

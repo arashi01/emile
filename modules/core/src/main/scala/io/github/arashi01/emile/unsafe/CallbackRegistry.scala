@@ -4,12 +4,17 @@
  */
 package io.github.arashi01.emile.unsafe
 
+// scalafix:off DisableSyntax.null, DisableSyntax.var, DisableSyntax.asInstanceOf; unsafe FFI callback registry
+
 import scala.annotation.internal.sharable
-import scala.collection.mutable.{LongMap, Set as MutableSet}
-import scala.scalanative.unsafe.*
+import scala.collection.mutable.LongMap
+import scala.collection.mutable.Set as MutableSet
 import scala.scalanative.libc.stdlib
-import scala.scalanative.runtime.{fromRawPtr, toRawPtr}
-import scala.scalanative.runtime.Intrinsics.{castObjectToRawPtr, castRawPtrToObject}
+import scala.scalanative.runtime.Intrinsics.castObjectToRawPtr
+import scala.scalanative.runtime.Intrinsics.castRawPtrToObject
+import scala.scalanative.runtime.fromRawPtr
+import scala.scalanative.runtime.toRawPtr
+import scala.scalanative.unsafe.*
 
 /**
  * Registry for mapping stable Long IDs to Scala callback objects.
@@ -24,7 +29,7 @@ import scala.scalanative.runtime.Intrinsics.{castObjectToRawPtr, castRawPtrToObj
  * - Scala Native's current Immix/Commix GC is mark-sweep (non-moving), but future
  *   GC implementations may use moving collectors
  * - Storing raw pointers to GC-managed objects in C structures is inherently unsafe
- * - The registry pattern uses stable Long IDs that remain valid regardless of GC behavior
+ * - The registry pattern uses stable Long IDs that remain valid regardless of GC behaviour
  * - The registry keeps callbacks rooted (preventing premature collection) while registered
  * - ID 0 is reserved as a sentinel value meaning "no callback registered"
  *

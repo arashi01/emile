@@ -4,6 +4,9 @@
  */
 package io.github.arashi01.emile.unsafe.types
 
+// scalafix:off DisableSyntax.null
+// scalafix:off DisableSyntax.asInstanceOf
+
 import scala.scalanative.unsafe.Ptr
 
 /**

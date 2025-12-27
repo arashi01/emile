@@ -18,7 +18,7 @@ package io.github.arashi01.emile
  * val timer: Either[EmileError, Timer[Open]] = Timer.init(loop)
  *
  * // Only open timers can be started
- * timer.foreach(_.start(Duration.seconds(1), Duration.Zero)(() => println("Fired!")))
+ * timer.foreach(_.start(Timeout.seconds(1), Timeout.Zero)(() => println("Fired!")))
  *
  * // close returns Timer[Closed] - cannot be used for operations
  * val closed: Either[EmileError, Timer[Closed]] = timer.flatMap(_.close)

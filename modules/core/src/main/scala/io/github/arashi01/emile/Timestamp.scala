@@ -27,11 +27,11 @@ object Timestamp:
 
     /** Calculate duration between two timestamps. */
     @targetName("minus")
-    inline def -(other: Timestamp): Duration = Duration.millis(t - other)
+    inline def -(other: Timestamp): Timeout = Timeout.millis(t - other)
 
     /** Add a duration to get a future timestamp. */
     @targetName("plus")
-    inline def +(duration: Duration): Timestamp = t + duration.toMillis
+    inline def +(duration: Timeout): Timestamp = t + duration.toMillis
 
     /** Check if this timestamp is before another. */
     inline def isBefore(other: Timestamp): Boolean = t < other

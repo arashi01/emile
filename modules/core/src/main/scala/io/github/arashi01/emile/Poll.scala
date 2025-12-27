@@ -4,9 +4,16 @@
  */
 package io.github.arashi01.emile
 
+// scalafix:off DisableSyntax.var; libuv FFI poll handle
+
+import _root_.io.github.arashi01.emile.unsafe.CallbackIdUtils
+import _root_.io.github.arashi01.emile.unsafe.CallbackRegistry
+import _root_.io.github.arashi01.emile.unsafe.LibUV
+import boilerplate.nullable.*
+
+import scala.scalanative.libc.stdlib.calloc
+import scala.scalanative.libc.stdlib.free
 import scala.scalanative.unsafe.*
-import scala.scalanative.libc.stdlib.{calloc, free}
-import _root_.io.github.arashi01.emile.unsafe.{LibUV, CallbackRegistry, CallbackIdUtils}
 
 /**
  * writability and disconnection, similar to POSIX `poll(2)`.
@@ -68,19 +75,18 @@ object Poll:
    *
    * @param loop The event loop
    * @param fd The file descriptor to poll
-   * @return Either an error or the initialized poll handle
+   * @return Either an error or the initialised poll handle
    */
   def init(loop: Loop, fd: Int): Either[EmileError, Poll[Open]] =
     val size = LibUV.uv_handle_size(UV_POLL)
-    val handle = calloc(1L, size.toLong)
-    if handle == null then Left(EmileError.OutOfMemory)
-    else
+    calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
       val result = LibUV.uv_poll_init(loop.ptrUnsafe, handle, fd)
       if result < 0 then
         free(handle)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
         Right(handle)
+    }
 
   /**
    * Initialize a poll handle for a socket.
@@ -91,19 +97,18 @@ object Poll:
    *
    * @param loop The event loop  
    * @param socket The socket to poll (platform-specific type)
-   * @return Either an error or the initialized poll handle
+   * @return Either an error or the initialised poll handle
    */
   def initSocket(loop: Loop, socket: Ptr[Byte]): Either[EmileError, Poll[Open]] =
     val size = LibUV.uv_handle_size(UV_POLL)
-    val handle = calloc(1L, size.toLong)
-    if handle == null then Left(EmileError.OutOfMemory)
-    else
+    calloc(1L, size.toLong).either(EmileError.OutOfMemory).flatMap { handle =>
       val result = LibUV.uv_poll_init_socket(loop.ptrUnsafe, handle, socket)
       if result < 0 then
         free(handle)
         Left(EmileError.fromErrorCode(ErrorCode(result)))
       else
         Right(handle)
+    }
 
   /** Internal constructor from raw pointer. */
   private[emile] inline def apply[S <: HandleState](p: Ptr[Byte]): Poll[S] = p
