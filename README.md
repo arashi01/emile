@@ -8,15 +8,32 @@
 
 ## Overview
 
-Émile is designed as the I/O foundation for high-performance Scala Native applications, particularly the [Jenga](https://github.com/arashi01/jenga) HTTP/2 server framework.
+Émile is designed as the I/O foundation for high-performance Scala Native applications.
 
-### Key Features
+### The Key Difference
 
-- **Zero-overhead FFI**: Opaque types wrap native pointers with no runtime cost
-- **Phantom-type safety**: Handle lifecycle tracked at compile time (`Open`/`Closed`)
-- **Typed error channels**: `Eff[IO, EmileError, A]` for explicit error handling
-- **cats-effect integration**: libuv becomes THE runtime poller via `LibuvPollingSystem`
-- **Cross-platform addresses**: `emile-ipa` works on JVM, JS, and Native
+**Émile replaces cats-effect's default polling system entirely.** Where cats-effect Native uses raw `epoll`/`kqueue` syscalls and scala-native-loop runs libuv alongside `ExecutionContext`, Émile's `LibuvPollingSystem` implements cats-effect's `PollingSystem` trait directly; making libuv THE event loop that drives fiber scheduling.
+
+This means:
+- **Zero bridging overhead**: libuv callbacks wake fibers directly, no `Future`→`IO` conversion
+- **Single event loop**: All I/O (TCP, DNS, timers, signals) flows through the same loop that cats-effect uses for work-stealing
+- **Per-worker loops**: Each cats-effect worker thread gets its own libuv loop, matching cats-effect's thread model exactly
+
+| Aspect | Émile | scala-native-loop | cats-effect Native |
+|--------|-------|-------------------|-------------------|
+| **Runtime integration** | Replaces `PollingSystem` | Separate from runtime | Built-in epoll/kqueue |
+| **Event loop** | libuv **is** the poller | libuv + `ExecutionContext` | Raw syscalls |
+| **Fiber wakeup** | Direct via `uv_async_t` | Via `Future`/`Promise` | Direct via eventfd/pipe |
+| **Handle lifecycle** | Phantom types (`Open`/`Closed`) | Manual | Resource-based |
+| **Error handling** | Typed channels (`Eff[IO, E, A]`) | Exceptions | IO exceptions |
+| **DNS resolution** | ✅ async via libuv | ❌ | ✅ blocking/threadpool |
+| **Signal handling** | ✅ async-safe bridge | ❌ | ❌ |
+
+**scala-native-loop** uses `NativeExecutionContext` and libuv's global `uv_default_loop()`. This requires bridging between libuv's callback model and Scala's `Future`.
+
+**cats-effect Native** uses raw syscalls (`epoll_create1`/`kqueue`) for fd-level polling. Efficient but limited to file descriptor readiness - DNS, timers, and signals require separate mechanisms.
+
+**Émile** exposes libuv's full-featured async primitives directly to cats-effect fibers through a unified `PollingSystem`. No bridging, separate loops, or blocking thread pools.
 
 ## Architecture
 
@@ -36,13 +53,13 @@
 
 ## Quick Start
 
-### Installation
+### Usage
 
 ```scala
 // build.sbt
 libraryDependencies ++= Seq(
   "io.github.arashi01" %%% "emile-ipa"  % "0.1.0",  // Cross-platform
-  "io.github.arashi01" %%  "emile-cats" % "0.1.0"   // Native only
+  "io.github.arashi01" %%%  "emile-cats" % "0.1.0"   // Native only
 )
 ```
 
@@ -50,10 +67,10 @@ libraryDependencies ++= Seq(
 
 ```scala
 import cats.effect.*
-import io.github.arashi01.emile.*
-import io.github.arashi01.emile.cats.*
-import io.github.arashi01.emile.ipa.*
-import io.github.arashi01.emile.ipa.literals.*
+import emile.*
+import emile.cats.*
+import emile.ipa.*
+import emile.ipa.literals.*
 
 object HelloServer extends EmileIOApp:
   def run(args: List[String]): IO[ExitCode] =
@@ -79,8 +96,8 @@ object HelloServer extends EmileIOApp:
 Zero-allocation IP and socket address types with compile-time validation.
 
 ```scala
-import io.github.arashi01.emile.ipa.*
-import io.github.arashi01.emile.ipa.literals.*
+import emile.ipa.*
+import emile.ipa.literals.*
 
 // Compile-time validated literals
 val addr = ipv4"192.168.1.1"
@@ -109,7 +126,7 @@ val socket = SocketAddress.v4(Ipv4Address.Loopback, Port(8080))
 Direct libuv bindings with phantom-state tracking.
 
 ```scala
-import io.github.arashi01.emile.*
+import emile.*
 
 // Create and run an event loop
 for
@@ -144,7 +161,7 @@ cats-effect integration with typed error channels.
 ```scala
 import cats.effect.*
 import boilerplate.effect.*
-import io.github.arashi01.emile.cats.*
+import emile.cats.*
 
 object MyApp extends EmileIOApp:
   override def loopConfig: LoopConfig = 
@@ -171,7 +188,7 @@ object MyApp extends EmileIOApp:
 
 ## Error Handling
 
-Émile uses typed error channels via `boilerplate.effect.Eff`:
+Émile uses typed error channels via [`boilerplate.effect.Eff`](https://github.com/arashi01/boilerplate):
 
 ```scala
 // Eff[F, E, A] ≡ F[Either[E, A]]
@@ -198,22 +215,6 @@ val io: IO[Either[EmileError, Tcp[Open]]] = tcp.either
 - **Scala Native**: 0.5+
 - **libuv**: 1.x (system library)
 
-### Installing libuv
-
-```bash
-# macOS
-brew install libuv
-
-# Ubuntu/Debian
-apt install libuv1-dev
-
-# Fedora/RHEL
-dnf install libuv-devel
-
-# Arch
-pacman -S libuv
-```
-
 ## Building
 
 ```bash
@@ -224,39 +225,18 @@ sbt compile
 sbt test
 
 # Code style check
-sbt staticCheck
+sbt check
 
 # Auto-format
 sbt format
 ```
 
-## Design Principles
-
-1. **Errors as values**: `Either[E, A]` everywhere, never throw
-2. **Zero-cost abstractions**: Opaque types, inline methods
-3. **Compile-time safety**: Phantom types, Scala 3 features
-4. **British English**: `initialise`, `colour`, `behaviour`
-5. **No default parameters**: Use overloads
-6. **Separation of concerns**: Data aggregates have no methods
-
-## Roadmap
-
-### Completed for Jenga Integration
-
-- [x] DNS resolution via `uv_getaddrinfo`
-- [x] Signal handling via async-signal-safe C bridge with `uv_async_t`
-
-### Planned
-
-- [ ] FS2 stream integration
-
 ## Licence
 
-MIT © 2025 the original author(s)
+Licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0) (the "License"); you may not use this software except in compliance with the License. Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
 ## Acknowledgements
 
 - [libuv](https://libuv.org/) - Cross-platform async I/O
 - [cats-effect](https://typelevel.org/cats-effect/) - Purely functional effects
 - [boilerplate](https://github.com/arashi01/boilerplate) - Effect utilities
-

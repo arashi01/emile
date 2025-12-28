@@ -9,7 +9,7 @@ inThisBuild(
     version := versionSetting.value,
     dynver := versionSetting.toTaskable.toTask.value,
     versionScheme := Some("semver-spec"),
-    licenses := List("MIT" -> url("https://opensource.org/licenses/MIT")),
+    licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
     sonatypeCredentialHost := Sonatype.sonatypeCentralHost,
     publishCredentials,
     scmInfo := Some(
@@ -107,7 +107,7 @@ val `emile-js` =
     .in(file(".aggregate/js"))
     .settings(publish / skip := true)
     .aggregate(
-      `emile-ipa`.native,
+      `emile-ipa`.js,
     )
 
 
@@ -188,7 +188,7 @@ def fileHeaderSettings: List[Setting[?]] =
         val current: Int = Year.now.getValue
         if (start == current) s"$current" else s"$start, $current"
       }
-      Some(HeaderLicense.MIT(developmentTimeline, "the original author(s)."))
+      Some(HeaderLicense.ALv2(developmentTimeline, "Ali Rashid."))
     },
     headerEmptyLine := false
   )
