@@ -152,6 +152,8 @@ jobs:
         shell: pwsh
         run: |
           $vcpkgDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          # vcpkg static triplet names the lib uv_a.lib; Scala Native @link("uv") expects uv.lib
+          Copy-Item "$vcpkgDir\lib\uv_a.lib" "$vcpkgDir\lib\uv.lib"
           "SCALANATIVE_INCLUDE_DIRS=$vcpkgDir\include" >> $env:GITHUB_ENV
           "SCALANATIVE_LIB_DIRS=$vcpkgDir\lib" >> $env:GITHUB_ENV
 
