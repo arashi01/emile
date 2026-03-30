@@ -147,6 +147,14 @@ jobs:
         shell: pwsh
         run: vcpkg install libuv:x64-windows-static-md
 
+      - name: Set Scala Native library paths (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          $vcpkgDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          "SCALANATIVE_INCLUDE_DIRS=$vcpkgDir\include" >> $env:GITHUB_ENV
+          "SCALANATIVE_LIB_DIRS=$vcpkgDir\lib" >> $env:GITHUB_ENV
+
       - name: Test
         run: sbt --no-colors --supershell=false "emile-native/test"
 
