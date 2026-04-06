@@ -97,8 +97,12 @@ object Signal:
   /** Continue if stopped. */
   inline def SIGCONT: Int = posix.SIGCONT
 
-  /** Hangup signal - terminal closed or controlling process ended. */
-  inline def SIGHUP: Int = posix.SIGHUP
+  /** Hangup signal - terminal closed or controlling process ended.
+    *
+    * Cross-platform: libuv defines SIGHUP=1 on Windows (delivered when console closes). On POSIX
+    * the value is also 1 but comes from the system header.
+    */
+  inline def SIGHUP: Int = 1 // SIGHUP is 1 on all platforms (POSIX and libuv/Windows)
 
   /** Kill signal - cannot be caught or ignored. */
   inline def SIGKILL: Int = posix.SIGKILL

@@ -191,21 +191,36 @@ object Dns:
     }
   end getAddrInfoWithHints
 
-  /** Parse the addrinfo linked list into a list of SocketAddresses. */
+  /** Parse the addrinfo linked list into a list of SocketAddresses.
+    *
+    * libuv's uv_getaddrinfo returns the OS-native addrinfo struct, which has ai_addr and
+    * ai_canonname swapped on macOS/BSD/Windows vs Linux.
+    *
+    * Scala Native's posixlib addrinfo uses `_6` = ai_addr on Linux but the OS struct has `_6` =
+    * ai_canonname on macOS/BSD/Windows. Since we receive the OS-native struct from libuv, we must
+    * read with the correct field indices.
+    */
   private def parseAddrInfo(addrinfo: Ptr[Byte]): List[SocketAddress] =
+    // On macOS/BSD/Windows, ai_canonname is at _6 and ai_addr is at _7.
+    // On Linux, ai_addr is at _6 and ai_canonname is at _7.
+    import scala.scalanative.meta.LinktimeInfo.isLinux
+    inline def aiAddr(p: Ptr[addrinfo]): Ptr[sockaddr] =
+      if isLinux then p._6 else p._7.asInstanceOf[Ptr[sockaddr]]
+    inline def aiNext(p: Ptr[addrinfo]): Ptr[addrinfo] =
+      p._8.asInstanceOf[Ptr[addrinfo]]
+
     @tailrec
     def loop(current: Ptr[addrinfo], acc: List[SocketAddress]): List[SocketAddress] =
       if current == null then acc.reverse
       else
-        val sockaddr = current._6 // ai_addr
-        val nextAddr =
-          if sockaddr != null then
-            fromSockAddr(sockaddr) match
-              case Right(addr) => addr :: acc
-              case Left(_)     => acc // Skip invalid addresses
+        val addr = aiAddr(current)
+        val nextAcc =
+          if addr != null then
+            fromSockAddr(addr) match
+              case Right(sa) => sa :: acc
+              case Left(_)   => acc
           else acc
-        val next = current._8.asInstanceOf[Ptr[addrinfo]] // ai_next
-        loop(next, nextAddr)
+        loop(aiNext(current), nextAcc)
 
     loop(addrinfo.asInstanceOf[Ptr[addrinfo]], Nil)
   end parseAddrInfo

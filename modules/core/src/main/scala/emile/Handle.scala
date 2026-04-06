@@ -175,8 +175,12 @@ object Handle:
     }
     free(handle)
 
-  /** Close callback: detaches any callback, then frees handle memory. */
-  private[emile] val nullCloseCallback: LibUV.CloseCB = (handle: Ptr[Byte]) =>
-    CallbackStore.detach(handle)
-    free(handle)
+  /** Close callback: frees handle memory.
+    *
+    * Does NOT call CallbackStore.detach — the caller must detach before scheduling the close if the
+    * handle had a CallbackStore-managed callback. This callback is also used by
+    * Loop.walkCloseCallback for ALL handles (including libuv internal ones whose data fields are
+    * not CallbackStore-managed).
+    */
+  private[emile] val nullCloseCallback: LibUV.CloseCB = (handle: Ptr[Byte]) => free(handle)
 end Handle
