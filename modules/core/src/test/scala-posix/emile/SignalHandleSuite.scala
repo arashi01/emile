@@ -41,16 +41,6 @@ class SignalHandleSuite extends FunSuite:
   // Handle Lifecycle Tests
   // ===========================================================================
 
-  test("SignalHandle.init creates a valid handle"):
-    val result = for
-      loop <- Loop.create
-      signal <- SignalHandle.init(loop)
-      _ = signal.close
-      _ <- loop.run(RunMode.Default)
-      _ <- loop.close
-    yield signal
-    assert(result.isRight, s"Expected Right, got $result")
-
   test("SignalHandle.start registers callback without error"):
     assume(!isWindows, "Signal test requires Unix")
     val result = for
@@ -100,19 +90,6 @@ class SignalHandleSuite extends FunSuite:
       _ <- loop.close
     yield ()
     assert(result.isRight, s"Expected Right, got $result")
-
-  test("SignalHandle.closeAsync closes handle asynchronously"):
-    assume(!isWindows, "Signal test requires Unix")
-    var closeCallbackFired = false
-    val result = for
-      loop <- Loop.create
-      signal <- SignalHandle.init(loop)
-      _ = signal.closeAsync(_ => closeCallbackFired = true)
-      _ <- loop.run(RunMode.Default)
-      _ <- loop.close
-    yield ()
-    assert(result.isRight, s"Expected Right, got $result")
-    assert(closeCallbackFired, "Close callback should have fired")
 
   test("Multiple signal handles can watch the same signal"):
     assume(!isWindows, "Signal test requires Unix")
@@ -279,9 +256,6 @@ class SignalHandleSuite extends FunSuite:
   // Signal.isSupported Tests
   // ===========================================================================
 
-  test("Signal.isSupported returns true for SIGINT"):
-    assert(Signal.isSupported(Signal.SIGINT), "SIGINT is supported on all platforms")
-
   test("Signal.isSupported returns false for SIGKILL"):
     assert(!Signal.isSupported(Signal.SIGKILL), "SIGKILL cannot be caught")
 
@@ -295,10 +269,6 @@ class SignalHandleSuite extends FunSuite:
   test("Signal.isSupported on Unix returns true for SIGUSR2"):
     assume(!isWindows, "SIGUSR2 is Unix-only")
     assert(Signal.isSupported(Signal.SIGUSR2))
-
-  test("Signal.isSupported on Windows returns true for SIGBREAK"):
-    assume(isWindows, "SIGBREAK is Windows-specific")
-    assert(Signal.isSupported(Signal.SIGBREAK))
 
   // ===========================================================================
   // Lifecycle Safety Tests

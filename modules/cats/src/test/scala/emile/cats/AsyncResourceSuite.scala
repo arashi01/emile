@@ -23,7 +23,6 @@ import emile.EmileError
 
 /** Tests for AsyncResource - async handle lifecycle management. */
 class AsyncResourceSuite extends EmileSuite:
-  // scalafix:off
 
   // Helper to run Eff tests - unwraps to IO for the test framework
   private inline def runEff[A](eff: Eff[IO, EmileError, A]): IO[A] = eff.rethrow

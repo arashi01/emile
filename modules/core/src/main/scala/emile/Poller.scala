@@ -64,10 +64,9 @@ end PollResult
   *
   * ==libuv Semantics==
   *
-  * The poller leverages libuv's three run modes:
+  * The poller leverages libuv's run modes:
   *
-  *   - `UV_RUN_DEFAULT`: Runs until no more active handles (used for indefinite blocking)
-  *   - `UV_RUN_ONCE`: Blocks for I/O once, processes callbacks (used for timed blocking)
+  *   - `UV_RUN_ONCE`: Blocks for one I/O iteration, processes callbacks (used for blocking polls)
   *   - `UV_RUN_NOWAIT`: Non-blocking poll (used for timeout=0 or yielding)
   *
   * The poll/processReadyEvents split maps to libuv as:
@@ -98,11 +97,9 @@ trait Poller:
 
   /** Poll for I/O events, blocking for up to the specified timeout.
     *
-    * This method integrates with libuv's `uv_run()`:
-    *
-    *   - `nanos == -1`: Block indefinitely (`UV_RUN_DEFAULT`)
+    *   - `nanos == -1`: Block for one iteration (`UV_RUN_ONCE`)
     *   - `nanos == 0`: Non-blocking poll (`UV_RUN_NOWAIT`)
-    *   - `nanos > 0`: Block up to timeout, then return (`UV_RUN_ONCE` with timer)
+    *   - `nanos > 0`: Block up to timeout (`UV_RUN_ONCE` with timer)
     *
     * @param nanos Maximum time to block in nanoseconds, or -1 for infinite
     * @return Poll result indicating what happened
@@ -221,14 +218,11 @@ object Poller:
         // Hotpath: select libuv run mode based on requested timeout
         val result = nanos match
           case -1L =>
-            // UV_RUN_ONCE blocks for I/O then processes callbacks from that
-            // single iteration. Timers expiring DURING the blocking phase
-            // are not processed until the next iteration. Follow up with
-            // UV_RUN_NOWAIT to process any callbacks that became ready
-            // during the blocking phase (including expired timers).
-            val r = LibUV.uv_run(loop.ptrUnsafe, RunMode.Once.toLibuv)
-            if r != 0 then LibUV.uv_run(loop.ptrUnsafe, RunMode.NoWait.toLibuv)
-            else r
+            // Single UV_RUN_ONCE: blocks in io_poll for one iteration, then
+            // processes timers/close callbacks and returns. Essential that
+            // this returns after ONE iteration so cats-effect worker threads
+            // can process rescheduled fibres between polls.
+            LibUV.uv_run(loop.ptrUnsafe, RunMode.Once.toLibuv)
           case 0L =>
             LibUV.uv_run(loop.ptrUnsafe, RunMode.NoWait.toLibuv)
           case timeout if timeout > 0L =>
@@ -263,10 +257,7 @@ object Poller:
         else
           val r = LibUV.uv_run(loop.ptrUnsafe, RunMode.Once.toLibuv)
           val _ = LibUV.uv_timer_stop(timer.ptr)
-          // Process callbacks that became ready during the blocking phase
-          if r != 0 then LibUV.uv_run(loop.ptrUnsafe, RunMode.NoWait.toLibuv)
-          else r
-    end pollWithTimeout
+          r
 
     /** Lazily initialise the timeout timer.
       *

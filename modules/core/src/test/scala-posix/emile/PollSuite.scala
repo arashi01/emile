@@ -208,22 +208,6 @@ class PollSuite extends FunSuite:
       assert(fired3, "Only the last registered callback should fire")
     }
 
-  test("PollEvent.fromLibuv converts bitmask correctly"):
-    assertEquals(PollEvent.fromLibuv(0), Set.empty[PollEvent])
-    assertEquals(PollEvent.fromLibuv(1), Set(PollEvent.Readable))
-    assertEquals(PollEvent.fromLibuv(2), Set(PollEvent.Writable))
-    assertEquals(PollEvent.fromLibuv(3), Set(PollEvent.Readable, PollEvent.Writable))
-    assertEquals(PollEvent.fromLibuv(4), Set(PollEvent.Disconnect))
-    assertEquals(PollEvent.fromLibuv(8), Set(PollEvent.Prioritized))
-    assertEquals(PollEvent.fromLibuv(15), Set(PollEvent.Readable, PollEvent.Writable, PollEvent.Disconnect, PollEvent.Prioritized))
-
-  test("PollEvent.combine creates correct bitmask"):
-    assertEquals(PollEvent.combine(), 0)
-    assertEquals(PollEvent.combine(PollEvent.Readable), 1)
-    assertEquals(PollEvent.combine(PollEvent.Writable), 2)
-    assertEquals(PollEvent.combine(PollEvent.Readable, PollEvent.Writable), 3)
-    assertEquals(PollEvent.combine(PollEvent.Readable, PollEvent.Writable, PollEvent.Disconnect), 7)
-
   // ===========================================================================
   // Lifecycle Safety Tests
   //

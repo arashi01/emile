@@ -66,27 +66,6 @@ class HandleStateSuite extends FunSuite:
       }
     }
 
-  test("Poll init returns Poll[Open]"):
-    withPipe { (readFd, _) =>
-      withLoop { loop =>
-        val result = Poll.init(loop, readFd)
-        assert(result.isRight)
-        // The fact this compiles proves init returns Poll[Open]
-        val poll: Poll[Open] = result.toOption.get
-        assert(poll.closeSync.isRight)
-      }
-    }
-
-  test("Poll closeSync completes without leaks"):
-    withPipe { (readFd, _) =>
-      withLoop { loop =>
-        Poll.init(loop, readFd).foreach { poll =>
-          val closeResult = poll.closeSync
-          assert(closeResult.isRight)
-        }
-      }
-    }
-
   test("Tcp init returns Tcp[Open]"):
     withLoop { loop =>
       val result = Tcp.init(loop)
@@ -123,20 +102,6 @@ class HandleStateSuite extends FunSuite:
         val sendResult = async.send
         assert(sendResult.isRight)
         assert(async.closeSync.isRight)
-      }
-    }
-
-  test("Poll can start/stop only in Open state"):
-    withPipe { (readFd, _) =>
-      withLoop { loop =>
-        Poll.init(loop, readFd).foreach { poll =>
-          // These compile because poll is Poll[Open]
-          val startResult = poll.start(PollEvent.Readable)((_, _) => ())
-          assert(startResult.isRight)
-          val stopResult = poll.stop
-          assert(stopResult.isRight)
-          assert(poll.closeSync.isRight)
-        }
       }
     }
 
@@ -201,7 +166,7 @@ class HandleStateSuite extends FunSuite:
 
   // Helper methods
 
-  private def withLoop(f: Loop => Unit): Unit =
+  private[emile] def withLoop(f: Loop => Unit): Unit =
     Loop.create.fold(
       err => fail(s"Failed to create loop: $err"),
       loop =>
@@ -211,19 +176,4 @@ class HandleStateSuite extends FunSuite:
         val _ = loop.close
     )
 
-  private def withPipe(f: (Int, Int) => Unit): Unit =
-    import scala.scalanative.posix.unistd
-    import scala.scalanative.unsafe.*
-
-    val pipefd = stackalloc[Int](2)
-    val result = unistd.pipe(pipefd)
-    assert(result == 0, s"pipe() failed with $result")
-
-    val readFd = pipefd(0)
-    val writeFd = pipefd(1)
-
-    f(readFd, writeFd)
-    val _ = unistd.close(readFd)
-    val _ = unistd.close(writeFd)
-  end withPipe
 end HandleStateSuite

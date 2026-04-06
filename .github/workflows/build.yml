@@ -140,22 +140,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-x64-windows-static-md-libuv-v1
+          key: vcpkg-x64-windows-libuv-v1
 
-      - name: Install libuv Development Headers (Windows)
+      - name: Install libuv (Windows)
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
-        run: vcpkg install libuv:x64-windows-static-md
+        run: vcpkg install libuv:x64-windows
 
       - name: Set Scala Native library paths (Windows)
         if: startsWith(matrix.os, 'windows')
         shell: pwsh
         run: |
-          $vcpkgDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
-          # libuv CMake produces libuv.lib (PREFIX "lib" + OUTPUT_NAME "uv"); @link("uv") expects uv.lib
-          Copy-Item "$vcpkgDir\lib\libuv.lib" "$vcpkgDir\lib\uv.lib"
+          $vcpkgDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
           "SCALANATIVE_INCLUDE_DIRS=$vcpkgDir\include" >> $env:GITHUB_ENV
           "SCALANATIVE_LIB_DIRS=$vcpkgDir\lib" >> $env:GITHUB_ENV
+          "$vcpkgDir\bin" >> $env:GITHUB_PATH
 
       - name: Test
         run: sbt --no-colors --supershell=false "emile-native/test"

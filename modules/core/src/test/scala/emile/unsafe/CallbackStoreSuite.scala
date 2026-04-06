@@ -36,10 +36,13 @@ class CallbackStoreSuite extends FunSuite:
     assert(rc == 0, s"uv_timer_init failed with $rc")
     handle
 
-  /** Close a handle synchronously (schedule close, run loop once). */
+  /** Close a handle synchronously (schedule close, run loop until closed). */
   private def closeHandle(loopPtr: Ptr[Byte], handle: Ptr[Byte]): Unit =
-    LibUV.uv_close(handle, null.asInstanceOf[LibUV.CloseCB])
-    val _ = LibUV.uv_run(loopPtr, 0) // RunMode.Default
+    LibUV.uv_close(handle, freeCallback)
+    while LibUV.uv_loop_alive(loopPtr) != 0 do
+      val _ = LibUV.uv_run(loopPtr, 1) // RunMode.Once
+
+  private val freeCallback: LibUV.CloseCB = (handle: Ptr[Byte]) => free(handle)
 
   test("attach and get round-trip"):
     val loop = Loop.create.toOption.get

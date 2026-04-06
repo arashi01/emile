@@ -43,6 +43,7 @@ lazy val `emile-ipa` = crossProject(JVMPlatform, JSPlatform, NativePlatform)
   .settings(publishSettings)
   .settings(libraryDependencies += libraries.boilerplate.value)
   .settings(description := "Cross-platform IP address and socket address types for Scala 3.")
+  .nativeSettings(posixTestSources(crossProjectBaseDirectory))
 
 val `emile-core` =
   project
@@ -56,6 +57,9 @@ val `emile-core` =
     .settings(publishSettings)
     .settings(libraryDependencies += libraries.boilerplate.value)
     .settings(Test / parallelExecution := false)
+    .settings(posixTestSources(baseDirectory))
+    .settings(windowsTestSources(baseDirectory))
+    .settings(windowsLibuvLinkDeps)
 
 val `emile-cats` =
   project
@@ -73,6 +77,7 @@ val `emile-cats` =
     .settings(libraryDependencies += libraries.`boilerplate-effect`.value)
     .settings(libraryDependencies += libraries.`scala-java-time`.value % Test)
     .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
+    .settings(posixTestSources(baseDirectory))
 
 val `emile-native` =
   project
@@ -141,12 +146,12 @@ def baseCompilerOptions = List(
   // Scala 3-specific checks
   "-Yrequire-targetName",
   "-Ycheck-reentrant",
-  "-Ycheck-mods",
+  "-Ycheck-mods"
 )
 
 def compilerOptions = baseCompilerOptions ++ List(
   "-Yexplicit-nulls",
-  "-Xcheck-macros",
+  "-Xcheck-macros"
 )
 
 def compilerSettings = List(
@@ -160,6 +165,30 @@ def formattingSettings = List(
   scalafmtDetailedError := true,
   scalafmtPrintDiff := true
 )
+
+// libuv on Windows depends on system libraries not linked automatically.
+// On POSIX these symbols are in libc and resolved implicitly.
+def windowsLibuvLinkDeps: Setting[?] =
+  nativeConfig := {
+    val c = nativeConfig.value
+    if (buildPlatform.value == BuildPlatform.Windows)
+      c.withLinkingOptions(c.linkingOptions ++ Seq("ole32.lib", "shell32.lib", "iphlpapi.lib", "userenv.lib"))
+    else c
+  }
+
+def posixTestSources(key: SettingKey[File]) =
+  Test / unmanagedSourceDirectories ++= {
+    if (buildPlatform.value == BuildPlatform.Linux || buildPlatform.value == BuildPlatform.MacOS) {
+      Seq(key.value / "src" / "test" / "scala-posix")
+    } else Nil
+  }
+
+def windowsTestSources(key: SettingKey[File]) =
+  Test / unmanagedSourceDirectories ++= {
+    if (buildPlatform.value == BuildPlatform.Windows)
+      Seq(key.value / "src" / "test" / "scala-windows")
+    else Nil
+  }
 
 def unitTestSettings: List[Setting[?]] = List(
   libraryDependencies ++= List(

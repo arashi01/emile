@@ -164,21 +164,16 @@ private[cats] object EffAsync:
 
           Async[F]
             .async[Either[EmileError, A]] { cb =>
+              // Acquire exclusive loop access. We are on a compute worker
+              // (via accessPoller migration above), so the CAS almost always
+              // succeeds on the first attempt. Spin briefly if another worker
+              // holds the lock during periodic polling.
+              // scalafix:off DisableSyntax.while; bounded spin for CAS
+              while !system.loopBusy.compareAndSet(false, true) do Thread.`yield`()
+              // scalafix:on
+
               val registered =
-                if system.loopBusy.compareAndSet(false, true) then
-                  try
-                    register(
-                      system.loop,
-                      { result =>
-                        if decremented.compareAndSet(false, true) then
-                          val p = pollerRef.get()
-                          if p != null then p.decrementPending() // scalafix:ok
-                        cb(Right(result))
-                      }
-                    )
-                  finally
-                    system.loopBusy.set(false)
-                else
+                try
                   register(
                     system.loop,
                     { result =>
@@ -188,6 +183,8 @@ private[cats] object EffAsync:
                       cb(Right(result))
                     }
                   )
+                finally
+                  system.loopBusy.set(false)
 
               registered.map { optFinalizer =>
                 val decrementIO = IO {

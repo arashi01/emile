@@ -16,7 +16,7 @@ Emile replaces cats-effect's default polling system with libuv. `LibuvPollingSys
 
 ## Architecture
 
-```
+```text
 emile-ipa      Cross-platform IP/port types (JVM, JS, Native)
 emile-core     Native-only libuv FFI bindings
 emile-cats     cats-effect integration (Resource, Eff, EmileIOApp)
@@ -152,7 +152,7 @@ Unix: full POSIX support. Windows: SIGINT, SIGBREAK, SIGHUP only.
 ```bash
 sbt compile        # Compile
 sbt test           # Run tests
-sbt staticCheck    # Code style check
+sbt check          # Code style check
 sbt format         # Auto-format
 ```
 

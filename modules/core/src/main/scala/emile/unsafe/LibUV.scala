@@ -287,6 +287,9 @@ private[emile] object LibUV:
   // Error functions
   // ==========================================================================
 
+  /** Convert a platform-specific system errno to a libuv error code. */
+  def uv_translate_sys_error(sys_errno: CInt): CInt = extern
+
   /** Get error name string. */
   def uv_err_name(err: CInt): CString = extern
 
