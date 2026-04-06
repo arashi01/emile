@@ -121,4 +121,17 @@ class SignalStreamSuite extends EmileSuite:
     }
   }
 
+  test("nested SignalStream.watch releases cleanly") {
+    runEff {
+      SignalStream.watch(Signal.SIGUSR1).use { case (_, ready1) =>
+        SignalStream.watch(Signal.SIGUSR2).use { case (_, ready2) =>
+          for
+            _ <- Eff.liftF[IO, EmileError, Unit](ready1)
+            _ <- Eff.liftF[IO, EmileError, Unit](ready2)
+          yield ()
+        }
+      }
+    }
+  }
+
 end SignalStreamSuite

@@ -22,40 +22,20 @@ import cats.effect.IO
 import boilerplate.effect.Eff
 
 import emile.EmileError
-import emile.Signal
 
 /** Regression tests for resource cleanup under various exit conditions. */
 class NestedCloseSuite extends EmileSuite:
 
   private inline def runEff[A](eff: Eff[IO, EmileError, A]): IO[A] = eff.rethrow
 
-  test("nested SignalStream.watch releases cleanly") {
-    runEff {
-      SignalStream.watch(Signal.SIGUSR1).use { case (_, ready1) =>
-        SignalStream.watch(Signal.SIGUSR2).use { case (_, ready2) =>
-          for
-            _ <- Eff.liftF[IO, EmileError, Unit](ready1)
-            _ <- Eff.liftF[IO, EmileError, Unit](ready2)
-          yield ()
-        }
-      }
-    }
-  }
-
   test("TimerResource releases cleanly under cancellation") {
-    // Start a fiber holding a timer resource, cancel it, verify the
-    // loop remains stable (no leaked handles, no crash)
     runEff {
       for
         fiber <- TimerResource.make.use { _ =>
-                   // Block indefinitely inside the resource
                    Eff.liftF[IO, EmileError, Unit](IO.never)
                  }.start
-        // Give the fiber time to acquire the resource
         _ <- Eff.liftF[IO, EmileError, Unit](IO.sleep(20.millis))
         _ <- fiber.cancel
-        // If the resource leaked or the close path is broken,
-        // subsequent resource acquisition would fail or hang
         _ <- TimerResource.make.use(_ => Eff.unit[IO, EmileError])
       yield ()
     }
@@ -67,7 +47,6 @@ class NestedCloseSuite extends EmileSuite:
         Eff.fail[IO, EmileError, Unit](EmileError.TimedOut)
       }
       program.catchAll(_ => Eff.unit[IO, EmileError]) *>
-        // Verify the loop is stable after error-path release
         TcpResource.make.use(_ => Eff.unit[IO, EmileError])
     }
   }

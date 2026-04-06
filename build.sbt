@@ -78,6 +78,7 @@ val `emile-cats` =
     .settings(libraryDependencies += libraries.`scala-java-time`.value % Test)
     .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
     .settings(posixTestSources(baseDirectory))
+    .settings(windowsLibuvLinkDeps)
 
 val `emile-native` =
   project
@@ -172,7 +173,7 @@ def windowsLibuvLinkDeps: Setting[?] =
   nativeConfig := {
     val c = nativeConfig.value
     if (buildPlatform.value == BuildPlatform.Windows)
-      c.withLinkingOptions(c.linkingOptions ++ Seq("ole32.lib", "shell32.lib", "iphlpapi.lib", "userenv.lib"))
+      c.withLinkingOptions(c.linkingOptions ++ Seq("-lole32", "-lshell32", "-liphlpapi", "-luserenv"))
     else c
   }
 
