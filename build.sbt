@@ -1,139 +1,66 @@
-inThisBuild(
-  List(
-    scalaVersion := "3.8.2",
-    organization := "io.github.arashi01",
-    description := "Scala Native async I/O library backed by libuv.",
-    startYear := Some(2025),
-    homepage := Some(url("https://github.com/arashi01/emile")),
-    semanticdbEnabled := true,
-    version := versionSetting.value,
-    dynver := versionSetting.toTaskable.toTask.value,
-    versionScheme := Some("semver-spec"),
-    licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
-    scmInfo := Some(
-      ScmInfo(
-        url("https://github.com/arashi01/emile"),
-        "scm:git:https://github.com/arashi01/emile.git",
-        Some("scm:git:git@github.com:arashi01/emile.git")
-      )
-    )
-  ) ++ formattingSettings
+scalaVersion := "3.8.3"
+organization := "io.github.arashi01"
+description := "Scala Native async I/O library backed by libuv."
+startYear := Some(2025)
+homepage := Some(url("https://github.com/arashi01/emile"))
+licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt"))
+versionScheme := Some("semver-spec")
+semanticdbEnabled := true
+scalafmtDetailedError := true
+scalafmtPrintDiff := true
+scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/arashi01/emile"),
+    "scm:git:https://github.com/arashi01/emile.git",
+    Some("scm:git:git@github.com:arashi01/emile.git")
+  )
 )
 
-val libraries = new {
-  val boilerplate = Def.setting("io.github.arashi01" %%% "boilerplate" % "0.7.0")
-  val `boilerplate-effect` = boilerplate(_.withName("boilerplate-effect"))
-  val cats = Def.setting("org.typelevel" %%% "cats-core" % "2.13.0")
-  val `cats-effect` = Def.setting("org.typelevel" %%% "cats-effect" % "3.7.0")
-  val fs2 = Def.setting("co.fs2" %%% "fs2-core" % "3.13.0")
-
-  // Testing
-  val `munit-cats-effect` = Def.setting("org.typelevel" %%% "munit-cats-effect" % "2.2.0")
-  val munit = Def.setting("org.scalameta" %%% "munit" % "1.2.4")
-  val `scala-java-time` = Def.setting("io.github.cquiroz" %%% "scala-java-time" % "2.6.0")
-}
-
-lazy val `emile-ipa` = crossProject(JVMPlatform, JSPlatform, NativePlatform)
-  .crossType(CrossType.Full)
-  .withoutSuffixFor(NativePlatform)
-  .in(file("modules/ipa"))
-  .settings(compilerSettings)
-  .settings(unitTestSettings)
-  .settings(fileHeaderSettings)
-  .settings(publishSettings)
-  .settings(libraryDependencies += libraries.boilerplate.value)
-  .settings(description := "Cross-platform IP address and socket address types for Scala 3.")
-  .nativeSettings(posixTestSources(crossProjectBaseDirectory))
-
-val `emile-core` =
+val emile =
   project
-    .in(file("modules/core"))
-    .enablePlugins(ScalaNativePlugin)
-    .dependsOn(`emile-ipa`.native)
-    .settings(description := "Scala Native libuv bindings and handle abstractions.")
-    .settings(compilerSettings)
-    .settings(unitTestSettings)
-    .settings(fileHeaderSettings)
+    .in(file("modules/emile"))
+    .enablePlugins(ScalaNativePlugin, EmileNativeBuild)
+    .settings(description := "Scala Native async I/O library backed by libuv, integrated with cats-effect.")
+    .settings(commonSettings)
     .settings(publishSettings)
-    .settings(libraryDependencies += libraries.boilerplate.value)
-    .settings(Test / parallelExecution := false)
-    .settings(posixTestSources(baseDirectory))
-    .settings(windowsTestSources(baseDirectory))
-    .settings(windowsLibuvLinkDeps)
+    .settings(libraryDependencies += Dependencies.`cats-effect`)
+    .settings(libraryDependencies += Dependencies.`cats-core`)
+    .settings(libraryDependencies += Dependencies.`fs2-core`)
+    .settings(libraryDependencies += Dependencies.`ip4s-core`)
+    .settings(libraryDependencies += Dependencies.`boilerplate`)
+    .settings(libraryDependencies += Dependencies.`boilerplate-effect`)
+    .settings(libraryDependencies += Dependencies.`munit` % Test)
+    .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
 
-val `emile-cats` =
+val `emile-fs2` =
   project
-    .in(file("modules/cats"))
-    .enablePlugins(ScalaNativePlugin)
-    .dependsOn(`emile-ipa`.native)
-    .dependsOn(`emile-core`)
-    .settings(description := "Scala Native cats-effect async I/O runtime backed by libuv.")
-    .settings(compilerSettings)
-    .settings(unitTestSettings)
-    .settings(fileHeaderSettings)
+    .in(file("modules/emile-fs2"))
+    .enablePlugins(ScalaNativePlugin, EmileNativeBuild)
+    .dependsOn(emile)
+    .settings(description := "fs2-networking interop for emile: TcpSocket/TcpServer adapters to fs2.io.net.Socket.")
+    .settings(commonSettings)
     .settings(publishSettings)
-    .settings(libraryDependencies += libraries.cats.value)
-    .settings(libraryDependencies += libraries.`cats-effect`.value)
-    .settings(libraryDependencies += libraries.`boilerplate-effect`.value)
-    .settings(libraryDependencies += libraries.`scala-java-time`.value % Test)
-    .settings(libraryDependencies += libraries.`munit-cats-effect`.value % Test)
-    .settings(posixTestSources(baseDirectory))
-    .settings(windowsLibuvLinkDeps)
-
-val `emile-native` =
-  project
-    .in(file(".aggregate/native"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `emile-ipa`.native,
-      `emile-core`,
-      `emile-cats`
-    )
-
-val `emile-jvm` =
-  project
-    .in(file(".aggregate/jvm"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `emile-ipa`.jvm
-    )
-
-val `emile-js` =
-  project
-    .in(file(".aggregate/js"))
-    .settings(publish / skip := true)
-    .aggregate(
-      `emile-ipa`.js
-    )
+    .settings(libraryDependencies += Dependencies.`fs2-io`)
+    .settings(libraryDependencies += Dependencies.`munit` % Test)
+    .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
 
 val `emile-root` =
   project
     .in(file("."))
     .settings(publish / skip := true)
-    .aggregate(
-      `emile-native`,
-      `emile-jvm`,
-      `emile-js`
-    )
+    .aggregate(emile, `emile-fs2`)
 
-def baseCompilerOptions = List(
-  // Language features
+def compilerOptions: Seq[String] = Seq(
   "-language:experimental.macros",
   "-language:higherKinds",
   "-language:implicitConversions",
   "-language:strictEquality",
-
-  // Kind projector / macros
   "-Xkind-projector",
   "-Xmax-inlines:64",
-
-  // Core checks
   "-unchecked",
   "-deprecation",
   "-feature",
   "-explain",
-
-  // Warning flags
   "-Wvalue-discard",
   "-Wnonunit-statement",
   "-Wunused:implicits",
@@ -142,137 +69,37 @@ def baseCompilerOptions = List(
   "-Wunused:locals",
   "-Wunused:params",
   "-Wunused:privates",
-  "-Werror",
-
-  // Scala 3-specific checks
   "-Yrequire-targetName",
   "-Ycheck-reentrant",
-  "-Ycheck-mods"
-)
-
-def compilerOptions = baseCompilerOptions ++ List(
+  "-Ycheck-mods",
+  "-Xcheck-macros",
   "-Yexplicit-nulls",
-  "-Xcheck-macros"
+  "-Werror"
 )
 
-def compilerSettings = List(
+def commonSettings: Seq[Setting[?]] = Seq(
   Compile / compile / scalacOptions ++= compilerOptions,
-  Test / compile / scalacOptions ++= baseCompilerOptions,
+  Test / compile / scalacOptions ++= compilerOptions,
   Compile / doc / scalacOptions := Nil,
-  Test / doc / scalacOptions := Nil
+  Test / doc / scalacOptions := Nil,
+  testFrameworks += new TestFramework("munit.Framework"),
+  headerLicense := {
+    val start = startYear.value.getOrElse(2025)
+    val current = java.time.Year.now.getValue
+    val years = if start == current then s"$current" else s"$start, $current"
+    Some(HeaderLicense.ALv2(years, "Ali Rashid"))
+  },
+  headerEmptyLine := false
 )
 
-def formattingSettings = List(
-  scalafmtDetailedError := true,
-  scalafmtPrintDiff := true
-)
-
-// libuv on Windows depends on system libraries not linked automatically.
-// On POSIX these symbols are in libc and resolved implicitly.
-def windowsLibuvLinkDeps: Setting[?] =
-  nativeConfig := {
-    val c = nativeConfig.value
-    if (buildPlatform.value == BuildPlatform.Windows)
-      c.withLinkingOptions(c.linkingOptions ++ Seq("-lole32", "-lshell32", "-liphlpapi", "-luserenv"))
-    else c
-  }
-
-def posixTestSources(key: SettingKey[File]) =
-  Test / unmanagedSourceDirectories ++= {
-    if (buildPlatform.value == BuildPlatform.Linux || buildPlatform.value == BuildPlatform.MacOS) {
-      Seq(key.value / "src" / "test" / "scala-posix")
-    } else Nil
-  }
-
-def windowsTestSources(key: SettingKey[File]) =
-  Test / unmanagedSourceDirectories ++= {
-    if (buildPlatform.value == BuildPlatform.Windows)
-      Seq(key.value / "src" / "test" / "scala-windows")
-    else Nil
-  }
-
-def unitTestSettings: List[Setting[?]] = List(
-  libraryDependencies ++= List(
-    libraries.munit.value % Test
-  ),
-  testFrameworks += new TestFramework("munit.Framework")
-)
-
-def fileHeaderSettings: List[Setting[?]] =
-  List(
-    headerLicense := {
-      val developmentTimeline = {
-        import java.time.Year
-        val start = startYear.value.get
-        val current: Int = Year.now.getValue
-        if (start == current) s"$current" else s"$start, $current"
-      }
-      Some(HeaderLicense.ALv2(developmentTimeline, "Ali Rashid."))
-    },
-    headerEmptyLine := false
-  )
-
-def pgpSettings: List[Setting[?]] = List(
-  PgpKeys.pgpSelectPassphrase := None,
-  usePgpKeyHex(System.getenv("SIGNING_KEY_ID"))
-)
-
-def versionSetting: Def.Initialize[String] = Def.setting(
-  dynverGitDescribeOutput.value.mkVersion(
-    (in: sbtdynver.GitDescribeOutput) =>
-      if (!in.isSnapshot()) in.ref.dropPrefix
-      else {
-        val ref = in.ref.dropPrefix
-        // Strip pre-release or build metadata (e.g., "-m.1" or "+build.5")
-        val base = ref.takeWhile(c => c != '-' && c != '+')
-        val numericParts =
-          base.split("\\.").toList.map(_.trim).flatMap(s => scala.util.Try(s.toInt).toOption)
-
-        if (numericParts.nonEmpty) {
-          val incremented = numericParts.updated(numericParts.length - 1, numericParts.last + 1)
-          s"${incremented.mkString(".")}-SNAPSHOT"
-        } else {
-          s"$base-SNAPSHOT"
-        }
-      },
-    "SNAPSHOT"
-  )
-)
-
-def publishSettings: List[Setting[?]] = pgpSettings ++: aetherSettings ++: List(
-  packageOptions += Package.ManifestAttributes(
-    "Build-Jdk" -> System.getProperty("java.version"),
-    "Specification-Title" -> name.value,
-    "Specification-Version" -> Keys.version.value,
-    "Implementation-Title" -> name.value
-  ),
+def publishSettings: Seq[Setting[?]] = Seq(
+  publishMavenStyle := true,
+  pomIncludeRepository := (_ => false),
   publishTo := {
-    if (Keys.version.value.toLowerCase.contains("snapshot"))
-      Some("central-snapshots".at("https://central.sonatype.com/repository/maven-snapshots/"))
+    if isSnapshot.value then Some("central-snapshots".at("https://central.sonatype.com/repository/maven-snapshots/"))
     else localStaging.value
   },
-  pomIncludeRepository := (_ => false),
-  publishMavenStyle := true,
-  developers := List(
-    Developer(
-      "arashi01",
-      "Ali Rashid",
-      "https://github.com/arashi01",
-      url("https://github.com/arashi01")
-    )
-  )
-)
-
-// Maven-native snapshot deployment via sbt-aether-deploy (timestamped SNAPSHOTs with maven-metadata.xml)
-def aetherSettings: List[Setting[?]] = List(
-  credentials ++= {
-    val user = sys.env.get("SONATYPE_USERNAME")
-    val pass = sys.env.get("SONATYPE_PASSWORD")
-    (user, pass) match {
-      case (Some(u), Some(p)) => List(Credentials("central-snapshots", "central.sonatype.com", u, p))
-      case _                  => Nil
-    }
-  }
+  developers := List(Developer("arashi01", "Ali Rashid", "https://github.com/arashi01", url("https://github.com/arashi01")))
 )
 
 addCommandAlias("format", "scalafixAll; scalafmtAll; scalafmtSbt; headerCreateAll")
