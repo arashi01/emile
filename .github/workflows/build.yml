@@ -1,4 +1,4 @@
-name: Integration Build
+name: CI
 
 on:
   workflow_dispatch:
@@ -6,165 +6,149 @@ on:
     branches: [main]
   push:
     branches: [main]
-    tags: [v*]
+    tags: ['v*']
 
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  JDK_RELEASE: 17
-  JDK_CURRENT: 25
-  NODE_LTS: 22
-  SBT_OPTS: >- # Use all available resources
-    -Xmx10G
-    -Xms6G
-    -Xss8M
-    -XX:ReservedCodeCacheSize=512M
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SBT_OPTS: >-
+    -Xmx10G
+    -Xms6G
+    -Xss4M
+    -XX:ReservedCodeCacheSize=512M
 
 jobs:
-  build-test:
-    name: Build & Test / ${{ matrix.platform-name }} / JDK ${{ matrix.java }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+  test_native:
+    name: "[${{ matrix.link }}: ${{ matrix.target }}] Tests"
     strategy:
       fail-fast: false
       matrix:
-        java: [17, 25]
-        os: [ubuntu-latest]
-        platform: [native, js, jvm]
         include:
-          # Display names for base matrix
-          - platform: native
-            platform-name: Native
-          - platform: js
-            platform-name: JS
-          - platform: jvm
-            platform-name: JVM
-          # Native platform tested on all OS
-          - java: 17
-            os: macos-latest
-            platform: native
-            platform-name: Native
-          - java: 25
-            os: macos-latest
-            platform: native
-            platform-name: Native
-          - java: 17
-            os: windows-latest
-            platform: native
-            platform-name: Native
-          - java: 25
-            os: windows-latest
-            platform: native
-            platform-name: Native
-
+          - link: dynamic
+            target: fedora-x86_64
+            runner: ubuntu-24.04
+            dockerImage: shuwariafrica/rawhide-jdk:17
+          - link: dynamic
+            target: fedora-aarch64
+            runner: ubuntu-24.04-arm
+            dockerImage: shuwariafrica/rawhide-jdk:17
+          # Alpine cells fail until scala-native PR #4934 (sigaltstack/SIGSTKSZ
+          # fix for musl) merges and a SN release ships. Remove `continueOnError`
+          # on all four alpine entries then.
+          - link: dynamic
+            target: alpine-x86_64
+            runner: ubuntu-24.04
+            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            continueOnError: true
+          - link: dynamic
+            target: alpine-aarch64
+            runner: ubuntu-24.04-arm
+            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            continueOnError: true
+          - link: static
+            target: alpine-x86_64
+            runner: ubuntu-24.04
+            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            continueOnError: true
+          - link: static
+            target: alpine-aarch64
+            runner: ubuntu-24.04-arm
+            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            continueOnError: true
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.continueOnError == true }}
+    timeout-minutes: 45
+    env:
+      DOCKER_IMAGE: ${{ matrix.dockerImage }}
+      EMILE_SYSTEM_LIBUV: "true"
+      EMILE_STATIC_LINK: ${{ matrix.link == 'static' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Set up Java ${{ matrix.java }}
-        id: setup-java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ matrix.java }}
-          check-latest: true
-          cache: sbt
-
-      - name: Set up sbt
-        uses: sbt/setup-sbt@v1
-
       - name: Set up Coursier cache
-        uses: coursier/cache-action@v7
+        uses: coursier/cache-action@v8
+      - name: "[host] Run tests"
+        run: ./project/scripts/run-sbt.sh -batch "emile/testOnly *" "emile-fs2/testOnly *"
+      - name: "[host] Static-linkage assertion"
+        if: matrix.link == 'static'
+        run: |
+          emile_bin=$(find target/out -type f -name 'emile_native0.5_3-test' -print -quit)
+          fs2_bin=$(find target/out -type f -name 'emile-fs2_native0.5_3-test' -print -quit)
+          test -n "$emile_bin" || { echo "emile static test binary not found"; exit 1; }
+          test -n "$fs2_bin"   || { echo "emile-fs2 static test binary not found"; exit 1; }
+          for bin in "$emile_bin" "$fs2_bin"; do
+            echo "--- $bin"
+            file_out=$(file "$bin")
+            ldd_out=$(ldd "$bin" 2>&1 || true)
+            echo "$file_out"
+            echo "ldd: $ldd_out"
+            echo "$file_out" | grep -q 'statically linked'
+            echo "$ldd_out" | grep -q 'not a dynamic executable'
+          done
 
-      - name: Set up Node.js
-        if: matrix.platform == 'js'
-        uses: actions/setup-node@v6
+  link_vendored:
+    name: "[vendored: glibc ${{ matrix.arch }}] nativeLink"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: shuwariafrica/el10-jdk:17
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
-          node-version: ${{ env.NODE_LTS }}
-
-      # Scala Native toolchains per OS
-      - name: Install LLVM/Clang toolchain (Ubuntu)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.platform == 'native'
-        shell: bash
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang lld llvm libuv1-dev
-
-      - name: Install LLVM toolchain (macOS)
-        if: startsWith(matrix.os, 'macos') && matrix.platform == 'native'
-        shell: bash
-        run: |
-          brew update
-          brew install llvm libuv || true
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-
-      - name: Install LLVM toolchain (Windows)
-        if: startsWith(matrix.os, 'windows') && matrix.platform == 'native'
-        shell: pwsh
-        run: |
-          choco install -y llvm
-          vcpkg install libuv:x64-windows
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "LIBRARY_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "C_INCLUDE_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Compile & Test (${{ matrix.platform }})
-        shell: bash
-        env:
-          # Helps Scala Native reliably find LLVM tools on Windows
-          CC: ${{ startsWith(matrix.os, 'windows') && 'clang' || '' }}
-          AR: ${{ startsWith(matrix.os, 'windows') && 'llvm-ar' || '' }}
-        run: sbt -Dsbt.ci=true "emile-${{ matrix.platform }}/test"
-
-      - name: Package Deployment Artefacts (${{ matrix.platform }})
-        shell: bash
-        run: sbt -Dsbt.ci=true "emile-${{ matrix.platform }}/package"
+          submodules: recursive
+          fetch-depth: 0
+      - name: Set up Coursier cache
+        uses: coursier/cache-action@v8
+      - name: Resolve libuv submodule SHA
+        id: libuv
+        run: echo "sha=$(git -C vendor/libuv rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Cache vendored libuv build
+        uses: actions/cache@v5
+        with:
+          path: target/libuv
+          key: libuv-vendored-${{ steps.libuv.outputs.sha }}-${{ hashFiles('project/EmileNativeBuild.scala') }}-${{ matrix.arch }}
+      - name: "Build in-tree libuv and verify test binary linkage"
+        run: ./project/scripts/run-sbt.sh -batch "emile/Test/nativeLink" "emile-fs2/Test/nativeLink"
 
   static-analysis:
-    name: Static Analysis
-    runs-on: ubuntu-latest
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    container: shuwariafrica/el10-jdk:17
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Set up Java ${{ env.JDK_CURRENT }}
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ env.JDK_CURRENT }}
-          check-latest: true
-          cache: sbt
-
-      - name: Set up sbt
-        uses: sbt/setup-sbt@v1
-
       - name: Set up Coursier cache
-        uses: coursier/cache-action@v7
-
+        uses: coursier/cache-action@v8
       - name: Verify Source Formatting
         id: scalafmt
         continue-on-error: true
-        run: sbt -Dsbt.ci=true scalafmtCheckAll
-
+        run: sbt -batch scalafmtCheckAll scalafmtSbtCheck
       - name: Verify Linting Conformity
         id: scalafix
         continue-on-error: true
-        run: sbt -Dsbt.ci=true "scalafixAll --check"
-
+        run: sbt -batch "scalafixAll --check"
       - name: Verify File Header Conformity
         id: headers
         continue-on-error: true
-        run: sbt -Dsbt.ci=true headerCheckAll
-
+        run: sbt -batch headerCheckAll
       - name: Check for failures
         if: always()
         run: |
@@ -178,44 +162,65 @@ jobs:
           fi
 
   publish:
-    name: Publish to Maven Central
-    needs: [build-test, static-analysis]
-    if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    name: Publish Binaries
+    needs: [test_native, link_vendored, static-analysis]
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    container: shuwariafrica/el10-jdk:17
+    timeout-minutes: 90
     permissions:
-      contents: read
-
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: "Setup GPG Key and Agent"
-        id: import_gpg
+      - name: Import signing key
         uses: crazy-max/ghaction-import-gpg@v6
         with:
           gpg_private_key: ${{ secrets.SIGNING_KEY }}
-          trust_level: 5
-
-      - name: Set up Java ${{ env.JDK_RELEASE }}
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ env.JDK_RELEASE }}
-          check-latest: true
-          cache: sbt
-
-      - name: Install sbt
-        uses: sbt/setup-sbt@v1
-
       - name: Set up Coursier cache
-        uses: coursier/cache-action@v7
-
-      - name: Publish Release Artefacts (jvm/js/native)
+        uses: coursier/cache-action@v8
+      - name: Publish Binaries
+        run: sbt -batch publishSigned
         env:
-          PUBLISH_USER: ${{ secrets.PUBLISH_USER }}
-          PUBLISH_USER_PASSPHRASE: ${{ secrets.PUBLISH_USER_PASSPHRASE }}
-          SIGNING_KEY_ID: ${{ secrets.SIGNING_KEY_ID }}
-        run: sbt -Dsbt.ci=true "clean; publishSigned; sonatypeBundleRelease"
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      - name: Publish Maven Central Release
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
+        run: sbt -batch sonaUpload sonaRelease
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease_flag=""
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            prerelease_flag="--prerelease"
+          fi
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --verify-tag \
+            $prerelease_flag
+
+  dependency-graph:
+    name: Update Dependency Graph
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    container: shuwariafrica/el10-jdk:17
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+      - name: Submit Dependency Graph
+        uses: scalacenter/sbt-dependency-submission@v3          

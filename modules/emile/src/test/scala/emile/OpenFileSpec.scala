@@ -1,0 +1,52 @@
+/*
+ * Copyright 2025, 2026 Ali Rashid
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package emile
+
+import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Path
+
+import cats.effect.IO
+import cats.effect.Resource
+
+/** Covers [[OpenFile]]: size reports the byte count of the opened file. */
+final class OpenFileSpec extends EmileSuite:
+
+  test("size reports the file's byte count") {
+    val content = "emile OpenFile size probe".getBytes("UTF-8")
+    tempFile(content).use: path =>
+      OpenFile.open(path).use(_.size).absolve.assertEquals(content.length.toLong)
+  }
+
+  test("open of a missing path fails with a typed Io error") {
+    val missingPath = Path.of(s"/tmp/emile-test-missing-${System.nanoTime}")
+    OpenFile.open(missingPath).use(_.size).either.map {
+      case Left(_: EmileError.Io) => ()
+      case other => fail(s"expected EmileError.Io, got: $other")
+    }
+  }
+
+  private def tempFile(content: Array[Byte]): Resource[IO, Path] =
+    Resource.make(IO(writeTempFile(content)))(file => IO(file.delete(): Unit)).map(_.toPath)
+
+  private def writeTempFile(content: Array[Byte]): File =
+    val file = File.createTempFile("emile-openfile", ".tmp")
+    val out = new FileOutputStream(file)
+    try out.write(content)
+    finally out.close()
+    file
+
+end OpenFileSpec

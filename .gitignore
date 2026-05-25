@@ -1,4 +1,9 @@
 .*
 !.github/
+!.scalafix.conf
+!.scalafmt.conf
 target/
 metals.sbt
+*.md
+!CONTRIBUTING.md
+!README.md

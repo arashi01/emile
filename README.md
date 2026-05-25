@@ -1,242 +1,264 @@
 # Émile
 
-> Named after the famed telegraph engineer, Émile provides ultra-low overhead Scala 3 Native bindings for libuv with first-class cats-effect integration.
-
-[![Scala 3.7+](https://img.shields.io/badge/scala-3.7+-red.svg)](https://www.scala-lang.org/)
-[![Scala Native 0.5+](https://img.shields.io/badge/scala--native-0.5+-blue.svg)](https://scala-native.org/)
-[![cats-effect 3.7+](https://img.shields.io/badge/cats--effect-3.7+-green.svg)](https://typelevel.org/cats-effect/)
-
-## Overview
-
-Émile is designed as the I/O foundation for high-performance Scala Native applications.
-
-### The Key Difference
-
-**Émile replaces cats-effect's default polling system entirely.** Where cats-effect Native uses raw `epoll`/`kqueue` syscalls and scala-native-loop runs libuv alongside `ExecutionContext`, Émile's `LibuvPollingSystem` implements cats-effect's `PollingSystem` trait directly; making libuv THE event loop that drives fiber scheduling.
-
-This means:
-- **Zero bridging overhead**: libuv callbacks wake fibers directly, no `Future`→`IO` conversion
-- **Single event loop**: All I/O (TCP, DNS, timers, signals) flows through the same loop that cats-effect uses for work-stealing
-- **Per-worker loops**: Each cats-effect worker thread gets its own libuv loop, matching cats-effect's thread model exactly
-
-| Aspect | Émile | scala-native-loop | cats-effect Native |
-|--------|-------|-------------------|-------------------|
-| **Runtime integration** | Replaces `PollingSystem` | Separate from runtime | Built-in epoll/kqueue |
-| **Event loop** | libuv **is** the poller | libuv + `ExecutionContext` | Raw syscalls |
-| **Fiber wakeup** | Direct via `uv_async_t` | Via `Future`/`Promise` | Direct via eventfd/pipe |
-| **Handle lifecycle** | Phantom types (`Open`/`Closed`) | Manual | Resource-based |
-| **Error handling** | Typed channels (`Eff[IO, E, A]`) | Exceptions | IO exceptions |
-| **DNS resolution** | ✅ async via libuv | ❌ | ✅ blocking/threadpool |
-| **Signal handling** | ✅ async-safe bridge | ❌ | ❌ |
-
-**scala-native-loop** uses `NativeExecutionContext` and libuv's global `uv_default_loop()`. This requires bridging between libuv's callback model and Scala's `Future`.
-
-**cats-effect Native** uses raw syscalls (`epoll_create1`/`kqueue`) for fd-level polling. Efficient but limited to file descriptor readiness - DNS, timers, and signals require separate mechanisms.
-
-**Émile** exposes libuv's full-featured async primitives directly to cats-effect fibers through a unified `PollingSystem`. No bridging, separate loops, or blocking thread pools.
-
-## Architecture
-
-```
-┌──────────────┐    ┌───────────────┐    ┌───────────────┐
-│  emile-ipa   │───►│  emile-core   │───►│  emile-cats   │
-│ (addresses)  │    │ (libuv FFI)   │    │ (cats-effect) │
-└──────────────┘    └───────────────┘    └───────────────┘
-   JVM/JS/Native         Native              Native
-```
-
-| Module | Platform | Description |
-|--------|----------|-------------|
-| **emile-ipa** | JVM/JS/Native | IP addresses, ports, socket addresses with compile-time literals |
-| **emile-core** | Native | libuv bindings: `Loop`, `Tcp`, `Timer`, `Async`, `Poll`, `Signal`, `Dns` handles |
-| **emile-cats** | Native | cats-effect integration with `Resource`, `IO`, `Eff`, `DnsResolver`, `SignalStream` |
-
-## Quick Start
-
-### Usage
+Scala Native async I/O, built on libuv, integrated with cats-effect.
 
 ```scala
-// build.sbt
-libraryDependencies ++= Seq(
-  "io.github.arashi01" %%% "emile-ipa"  % "0.1.0",  // Cross-platform
-  "io.github.arashi01" %%%  "emile-cats" % "0.1.0"   // Native only
+import com.comcast.ip4s.*
+import emile.*
+
+object EchoServer extends EmileIOApp.Simple:
+  def runEff: EmIO[EmileError, Unit] =
+    val addr = SocketAddress(ipv4"0.0.0.0", port"8080")
+    Tcp.bind(addr, TcpOptions.server).widen[EmileError].use: server =>
+      server.connections
+        .parEvalMapUnordered(4096): socket =>
+          socket.reads.through(socket.writes).compile.drain
+        .compile.drain
+```
+
+Émile is the Scala Native event-loop integration cats-effect always wanted: one libuv `uv_loop_t` per work-stealing
+worker, plugged into cats-effect's `PollingSystem` hook. Every TCP, DNS, timer, signal, file, and fd-poll operation
+rides the same loop that schedules the fibre that issued it, with no `Future`/`Promise` indirection and no separate
+executor.
+
+It is **Native-first**: the public API is shaped for the Scala Native representation; the typed-error channel is
+`boilerplate.effect.EffIO[+E, +A]`.
+
+## Modules
+
+| Module      | Artifact                        | Purpose                                                                                                            |
+|-------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `emile`     | `io.github.arashi01::emile`     | Core library: bootstrap, TCP, DNS, timers, signals, files, fd-polling.                                             |
+| `emile-fs2` | `io.github.arashi01::emile-fs2` | fs2-networking interop: `TcpSocket.asFs2` / `TcpServer.acceptFs2` adapters onto `fs2.io.net.Socket[IO]`. Optional. |
+
+```scala
+// build.sbt (sbt 2.x)
+libraryDependencies ++= List(
+  "io.github.arashi01" %% "emile"     % "<version>",
+  "io.github.arashi01" %% "emile-fs2" % "<version>",  // only if you need the fs2 adapter
 )
 ```
 
-### Hello World TCP Server
+## Public API
 
-```scala
-import cats.effect.*
-import emile.*
-import emile.cats.*
-import emile.ipa.*
-import emile.ipa.literals.*
-
-object HelloServer extends EmileIOApp:
-  def run(args: List[String]): IO[ExitCode] =
-    EmileIOApp.withLoop { loop =>
-      given Loop = loop
-      
-      val address = SocketAddress.v4(ipv4"0.0.0.0", port"8080")
-      
-      TcpResource.bind(address).use { server =>
-        // Server logic here
-        Eff.succeed[IO, EmileError, ExitCode](ExitCode.Success)
-      }
-    }.either.flatMap {
-      case Right(code) => IO.pure(code)
-      case Left(err)   => IO.println(s"Error: $err").as(ExitCode.Error)
-    }
-```
-
-## Module Guide
-
-### emile-ipa
-
-Zero-allocation IP and socket address types with compile-time validation.
-
-```scala
-import emile.ipa.*
-import emile.ipa.literals.*
-
-// Compile-time validated literals
-val addr = ipv4"192.168.1.1"
-val p = port"8080"
-val v6 = ipv6"::1"
-
-// Runtime parsing with typed errors
-val parsed: Either[AddressError, SocketAddress] = 
-  SocketAddress.from("[::1]:443")
-
-// IPv6 with scope ID
-val scoped = SocketAddress.from("[fe80::1%eth0]:8080")
-
-// Socket address construction
-val socket = SocketAddress.v4(Ipv4Address.Loopback, Port(8080))
-```
-
-**Types**:
-- `Port` - TCP/UDP port (0-65535)
-- `Ipv4Address` - IPv4 address as 32-bit int
-- `Ipv6Address` - IPv6 address as two 64-bit longs
-- `SocketAddress` - V4 or V6 with port, flow info, scope ID
-
-### emile-core
-
-Direct libuv bindings with phantom-state tracking.
+### Bootstrap
 
 ```scala
 import emile.*
 
-// Create and run an event loop
-for
-  loop   <- Loop.create
-  result <- loop.run(RunMode.Default)
-  _      <- loop.close
-yield result
+// Application entry point - libuv polling system installed automatically.
+object MyApp extends EmileIOApp.Simple:
+  def runEff: EmIO[EmileError, Unit] = ???
 
-// TCP server
-for
-  tcp  <- Tcp.init(loop)
-  _    <- tcp.bind(address)
-  _    <- tcp.listen(128) { status =>
-            if status >= 0 then
-              for client <- Tcp.init(loop); _ <- tcp.accept(client)
-              yield client.readStart(data => println(s"Received: $data"))
-          }
-yield tcp
+// Or, for an app that consumes process arguments and returns an ExitCode:
+object MyArgsApp extends EmileIOApp:
+  def runEff(args: List[String]): EmIO[EmileError, ExitCode] = ???
+
+// Standalone runtime, for non-IOApp code (caller owns the runtime).
+val rt = Emile.runtime
+try myEff.absolve.unsafeRunSync()(using rt) finally rt.shutdown()
 ```
 
-**Handle Types**:
-- `Loop` - Event loop lifecycle
-- `Tcp[S]` - TCP server/client
-- `Timer[S]` - One-shot and repeating timers
-- `Async[S]` - Cross-thread wakeup
-- `Poll[S]` - File descriptor polling
-
-### emile-cats
-
-cats-effect integration with typed error channels.
+### TCP
 
 ```scala
-import cats.effect.*
-import boilerplate.effect.*
-import emile.cats.*
+import com.comcast.ip4s.*
+import emile.*
 
-object MyApp extends EmileIOApp:
-  override def loopConfig: LoopConfig = 
-    LoopConfig.empty.withMetricsEnabled(true)
-  
-  def run(args: List[String]): IO[ExitCode] =
-    EmileIOApp.withLoop { loop =>
-      given Loop = loop
-      
-      // Resources with typed error channel
-      TcpResource.bind(address).use { tcp =>
-        TimerResource.delay(1000).use { _ =>
-          Eff.succeed(ExitCode.Success)
-        }
-      }
-    }.either.map(_.getOrElse(ExitCode.Error))
+// Server: bind + listen completes synchronously inside resource acquisition; any failure
+// surfaces here, never later mid-stream on `connections`.
+Tcp.bind(SocketAddress(ipv4"0.0.0.0", port"8080"), TcpOptions.server).use: server =>
+  server.connections.evalMap(handle).compile.drain
+
+// Client: connect to an address ...
+Tcp.connect(SocketAddress(ipv4"127.0.0.1", port"8080")).use: socket =>
+  socket.write(Chunk.array("ping".getBytes("UTF-8"))) >> socket.read(4096)
+
+// ... or resolve and connect by hostname (serial attempts in resolver order).
+Tcp.connect(host"example.com", port"443").use(socket => ???)
 ```
 
-**Resource Types**:
-- `TcpResource` - Managed TCP handles
-- `TimerResource` - Managed timers with delay/interval
-- `AsyncResource` - Managed async handles
-- `PollResource` - Managed poll handles
+A `TcpSocket` offers four read paths chosen by two axes - one-shot vs persistent, copying vs zero-copy:
 
-## Error Handling
+| Method     | Mode       | Buffer        | Typical use |
+|---|---|---|---|
+| `read`     | one-shot   | owned `Chunk` | request/response framing |
+| `readN`    | one-shot   | owned `Chunk` | fixed-size header reads |
+| `readPtr`  | one-shot   | zero-copy view | a single zero-copy read |
+| `reads`    | persistent | owned `Chunk` (stream) | TLS handshakes, websockets, line protocols |
+| `consume`  | persistent | zero-copy view | nghttp2-style synchronous chunk consumers |
 
-Émile uses typed error channels via [`boilerplate.effect.Eff`](https://github.com/arashi01/boilerplate):
+Writes mirror: `write(chunk: Chunk[Byte])`, `writes: Pipe[..., Byte, Nothing]`, `writePtr(buf, len)` for an
+already-native buffer, and `sendFile(file: OpenFile, offset, length)` for kernel-to-socket zero-copy via
+`uv_fs_sendfile`. Half-closes are `endOfInput` (send-only) and `endOfOutput` (`uv_shutdown`-backed receive-only).
+
+`socket.onLoop[A](thunk: => A)` submits a synchronous step to the socket's owning loop thread - the public face of
+emile's worker-affinity routing, useful for thread-confining a piece of C state (e.g. an nghttp2 `nghttp2_session`)
+alongside its read trampoline.
+
+### Timer
+
+`Timer.after(delay)` is a cancelable `IO.sleep` driven by cats-effect's per-worker `TimerHeap`; `LibuvPollingSystem`
+arms a `uv_timer_t` to bound each loop iteration's wait, so sleeps fire on time. `Timer.interval(period)` is a
+`fs2.Stream.fixedRate`.
+
+### Signal
 
 ```scala
-// Eff[F, E, A] ≡ F[Either[E, A]]
-type EffIO[A] = Eff[IO, EmileError, A]
+import emile.SignalNumber.*
 
-// Constructing Eff values
-val ok: EffIO[Int] = Eff.succeed[IO, EmileError, Int](42)
-val err: EffIO[Int] = Eff.fail[IO, EmileError, Int](EmileError.TimedOut)
-
-// Converting Either to Eff
-val tcp: EffIO[Tcp[Open]] = Tcp.init(loop).eff[IO]
-
-// Unwrapping to IO[Either[E, A]]
-val io: IO[Either[EmileError, Tcp[Open]]] = tcp.either
+Signal.watch(SIGUSR1).evalMap(_ => IO.println("got SIGUSR1")).compile.drain
+Signal.termination.head.compile.drain // SIGINT|SIGTERM, once
 ```
 
-**Error Types**:
-- `AddressError` - Address parsing/validation (emile-ipa)
-- `EmileError` - libuv operations, I/O errors (emile-core/cats)
+A single supervisor worker owns one `uv_signal_t` per signum; every subscriber, on any worker, receives every delivery.
+There is no `AlreadyWatched` failure mode and no race on the install.
 
-## Requirements
+### AsyncSignal
 
-- **Scala**: 3.7+
-- **Scala Native**: 0.5+
-- **libuv**: 1.x (system library)
+`AsyncSignal.resource` allocates a `uv_async_t`; `signal.fire` is libuv's documented cross-thread wake (no routing, no
+copy), `signal.fires` is a coalesced wake-up stream. libuv may coalesce many `fire`s into one delivery - it is an
+edge-triggered wake-up, not a counter.
 
-## Building
+### DNS
 
-```bash
-# Compile all modules
-sbt compile
+```scala
+import com.comcast.ip4s.*
 
-# Run tests
-sbt test
-
-# Code style check
-sbt check
-
-# Auto-format
-sbt format
+Dns.resolve(host"example.com", port"443"): EmIO[EmileError.Dns, NonEmptyList[SocketAddress[IpAddress]]]
+Dns.resolve(host"example.com"):             EmIO[EmileError.Dns, NonEmptyList[IpAddress]]
+Dns.reverse(ip"127.0.0.1"):                  EmIO[EmileError.Dns, Hostname]
 ```
+
+emile deliberately does not publish a `given com.comcast.ip4s.Dns[IO]`: ip4s seals that abstraction. Code reaching for
+`host.resolve[IO]` uses ip4s's own platform-resolver instance; emile's libuv resolver is reached through these calls,
+which also carry the typed `EmileError.Dns` channel.
+
+### FdPoll
+
+```scala
+FdPoll.resource(fd, Set(FdEvent.Readable, FdEvent.Disconnect)).use: poll =>
+  poll.await.flatMap(events => ???)
+```
+
+Backed by `uv_poll_t` - one-shot readiness on a foreign file descriptor.
+
+### OpenFile
+
+```scala
+OpenFile.open(java.nio.file.Paths.get("payload.bin")).use: file =>
+  file.size.flatMap(sz => socket.sendFile(file, 0L, sz))
+```
+
+`OpenFile` wraps a `uv_file` for the `sendFile` zero-copy path. The same file may serve multiple `sendFile` calls (range
+requests, partial-content responses) under one Resource scope.
+
+## Typed errors as values
+
+emile's effect alias is `EmIO[+E, +A] = boilerplate.effect.EffIO[E, A] = IO[Either[E, A]]` - covariant in both `E` and
+`A`. Every fallible operation publishes its precise error type:
+
+```scala
+def bind(addr: SocketAddress[IpAddress]): EmResource[EmileError.Bind, TcpServer]
+def connect(addr: SocketAddress[IpAddress]): EmResource[EmileError.Connect, TcpSocket]
+def connect(host: Host, port: Port): EmResource[EmileError.HostConnect, TcpSocket]
+def read(maxBytes: Int): EmIO[EmileError.Io, Option[Chunk[Byte]]]
+```
+
+`EmileError` is a sealed hierarchy with sub-traits per operation family (`Bind`, `Connect`, `Dns`, `Io`, `HostConnect`,
+`Runtime`); each carries named domain cases plus a `System(code: ErrorCode)` for unanticipated libuv codes and an
+`Unexpected(cause: Throwable)` for non-`EmileError` defects. `EmileError <: Exception`, so projecting onto plain `IO`'s
+`Throwable` channel via `.absolve` is lossless - the carried value remains pattern-matchable.
+
+The companion stream and resource aliases follow the same shape:
+
+| Alias                  | = | Variance in `E` |
+|---|---|---|
+| `EmIO[+E, +A]`         | `EffIO[E, A]`            | covariant |
+| `EmStream[+E, +A]`     | `Stream[EffIO.Of[E], A]` | covariant |
+| `EmResource[E, A]`     | `Resource[EffIO.Of[E], A]` | invariant (widen with `r.widen[E2]`) |
+| `EmPipe[E, -I, +O]`    | `Pipe[EffIO.Of[E], I, O]` | invariant; apply with `through` |
+
+## Loop tuning
+
+```scala
+final case class LoopConfig(blockProfilerSignal: Boolean, useIoUringSqpoll: Boolean)
+
+object LoopConfig:
+  val default: LoopConfig          // conservative; SIGPROF not blocked, no SQPOLL
+  val profilerProfile: LoopConfig  // blocks SIGPROF so a sampling profiler can drive the process
+```
+
+`LoopConfig` is applied per worker. SQPOLL is opt-in only: it needs `CAP_SYS_NICE` on kernels < 5.13 and falls back with
+`ENOSYS` otherwise. Turn it on with `LoopConfig.default.copy(useIoUringSqpoll = true)`.
+
+## fs2 interop - the `emile-fs2` module
+
+Core `emile` depends on `fs2-core`. The optional `emile-fs2` module additionally pulls in `fs2-io` and adds two
+adapters:
+
+```scala
+import emile.*
+import emile.Fs2Interop.*
+
+socket.asFs2: fs2.io.net.Socket[IO]                                  // a TcpSocket as fs2's Socket
+server.acceptFs2: fs2.Stream[IO, fs2.io.net.Socket[IO]]              // accept stream onto IO
+```
+
+The adapters cover per-connection interop with the fs2 ecosystem (the s2n-tls `TLSContext` wrappers, byte-level codecs,
+etc.). They project emile's typed-error channel onto `IO`'s `Throwable` channel via `EffIO.absolve` - lossless, since
+`EmileError <: Exception`.
+
+emile-fs2 deliberately does not implement `fs2.io.net.Network[IO]`. `Network[F]` is sealed in fs2; the principled path
+to a libuv-backed `Network[IO]` is an upstream contribution exposing fs2's provider SPI, which is fs2's call to make.
+Code that takes `Network[F]` as a constraint cannot be backed by emile through any short-of-upstream-changes path;
+`asFs2` / `acceptFs2` cover everything that consumes a `Socket[IO]` or a `Stream[IO, Socket[IO]]`.
+
+## Linking emile in your project
+
+emile's libuv bindings resolve at your application's `nativeLink` time. Add the linker option for libuv to your own
+`nativeConfig`:
+
+```scala
+// build.sbt
+libraryDependencies += "io.github.arashi01" %% "emile" % "<version>"
+
+import scala.scalanative.build.NativeConfig
+nativeConfig := nativeConfig.value.withLinkingOptions(
+  nativeConfig.value.linkingOptions :+ "-luv"
+)
+```
+
+For a fully-static binary, add `-static` alongside `-luv` and ensure your build environment provides a static libuv
+archive (Alpine edge's `libuv-static` package does; most distros ship only the shared library).
+
+For building emile itself from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### libuv version
+
+emile binds `uv_tcp_keepalive_ex`'s three-field form, which landed in **libuv 1.52.0** - your target machine needs
+libuv >= 1.52.0 at runtime (dynamic) or build time (static). Distros currently shipping a recent enough libuv: **Fedora
+rawhide**, **Alpine edge**. RHEL 10, Ubuntu 26.04, and Alpine 3.23.x still ship libuv 1.51.x.
+
+## Caveats
+
+### IPv6 scope id is not carried through `SocketAddress`
+
+emile's `SocketAddress[IpAddress]` to C `sockaddr_in6` round-trip does not propagate the `sin6_scope_id` field. ip4s
+models the scope id as `Ipv6Address.scopeId`, but the round-trip narrows it to `None`. A link-local IPv6 address (e.g.
+`fe80::1%eth0`) therefore loses its scope across the conversion - bind / connect / accept will use scope id 0. If you
+need scope-bound link-local IPv6 today, supply the scope through the underlying interface configuration; a future emile
+release may carry it through explicitly.
+
+## Platform Dependencies
+
+| Component    | Required version                |
+|--------------|---------------------------------|
+| Scala        | **3.8.x**                       |
+| Scala Native | **0.5.12+**                     |
+| libuv        | **>= 1.52.0**                   |
+| Platform     | Linux (glibc or musl)           |
 
 ## Licence
 
-Licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0) (the "License"); you may not use this software except in compliance with the License. Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
-
-## Acknowledgements
-
-- [libuv](https://libuv.org/) - Cross-platform async I/O
-- [cats-effect](https://typelevel.org/cats-effect/) - Purely functional effects
-- [boilerplate](https://github.com/arashi01/boilerplate) - Effect utilities
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
