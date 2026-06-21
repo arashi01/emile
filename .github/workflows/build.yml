@@ -79,8 +79,8 @@ jobs:
       - name: "[host] Static-linkage assertion"
         if: matrix.link == 'static'
         run: |
-          emile_bin=$(find target/out -type f -name 'emile_native0.5_3-test' -print -quit)
-          fs2_bin=$(find target/out -type f -name 'emile-fs2_native0.5_3-test' -print -quit)
+          emile_bin=$(find target/out -type f -name 'emile-test' -print -quit)
+          fs2_bin=$(find target/out -type f -name 'emile-fs2-test' -print -quit)
           test -n "$emile_bin" || { echo "emile static test binary not found"; exit 1; }
           test -n "$fs2_bin"   || { echo "emile-fs2 static test binary not found"; exit 1; }
           for bin in "$emile_bin" "$fs2_bin"; do
@@ -94,7 +94,7 @@ jobs:
           done
 
   link_vendored:
-    name: "[vendored: glibc ${{ matrix.arch }}] nativeLink"
+    name: "[vendored: glibc ${{ matrix.arch }}] snxLink"
     strategy:
       fail-fast: false
       matrix:
@@ -110,20 +110,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          submodules: recursive
           fetch-depth: 0
       - name: Set up Coursier cache
         uses: coursier/cache-action@v8
-      - name: Resolve libuv submodule SHA
-        id: libuv
-        run: echo "sha=$(git -C vendor/libuv rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Cache vendored libuv build
-        uses: actions/cache@v5
-        with:
-          path: target/libuv
-          key: libuv-vendored-${{ steps.libuv.outputs.sha }}-${{ hashFiles('project/EmileNativeBuild.scala') }}-${{ matrix.arch }}
-      - name: "Build in-tree libuv and verify test binary linkage"
-        run: ./project/scripts/run-sbt.sh -batch "emile/Test/nativeLink" "emile-fs2/Test/nativeLink"
+      - name: "Build vendored libuv and verify test binary linkage"
+        run: ./project/scripts/run-sbt.sh -batch "emile/Test/snxLink" "emile-fs2/Test/snxLink"
 
   static-analysis:
     name: Static analysis

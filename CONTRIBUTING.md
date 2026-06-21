@@ -12,21 +12,21 @@ This document covers what you need to build Émile from source, run its tests, a
 
 ## Build flags
 
-Two keys provided by `EmileNativeBuild` AutoPlugin control how emile's tests are linked:
+Two keys provided by the `EmileNativeBuild` AutoPlugin control how emile's tests are linked:
 
-| Setting            | Env-var shortcut          | Default | Effect                                                                                                                            |
-|--------------------|---------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `emileSystemLibUV` | `EMILE_SYSTEM_LIBUV=true` | `false` | `true` links against the host/distro libuv (`-luv`); `false` builds the `vendor/libuv` submodule and links the resulting archive. |
-| `emileStaticLink`  | `EMILE_STATIC_LINK=true`  | `false` | `true` adds `-static` to the linker command, producing a fully static test binary; `false` produces a dynamically-linked one.     |
+| Setting          | Env-var shortcut          | Default | Effect                                                                                                                                  |
+|------------------|---------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------|
+| `useSystemLibUV` | `EMILE_SYSTEM_LIBUV=true` | `false` | `true` links against the host/distro libuv (`-luv`); `false` has sbt-snx clone and cmake-build a pinned libuv, linking the archive.     |
+| `staticTestLink` | `EMILE_STATIC_LINK=true`  | `false` | `true` adds `-static`, producing a fully static test binary **on a musl toolchain (Alpine)**; ignored on glibc, where it stays dynamic. |
 
-The two settings combine to four linkage modes:
+The two settings combine to four linkage modes (`-static` is honoured only on musl):
 
-| `emileSystemLibUV` | `emileStaticLink` | Linkage                                                          |
-|--------------------|-------------------|------------------------------------------------------------------|
-| `false` (default)  | `false` (default) | Vendored archive, dynamic - the contributor fallback.            |
-| `false`            | `true`            | Vendored archive, `-static`.                                     |
-| `true`             | `false`           | Distro libuv `-luv`, dynamic - **what Maven Central users get**. |
-| `true`             | `true`            | Distro libuv (Alpine `libuv-static`), `-static`.                 |
+| `useSystemLibUV`  | `staticTestLink`  | Linkage                                                          |
+|-------------------|-------------------|------------------------------------------------------------------|
+| `false` (default) | `false` (default) | Vendored archive, dynamic - the contributor fallback.            |
+| `false`           | `true`            | Vendored archive; `-static` on musl, dynamic on glibc.           |
+| `true`            | `false`           | Distro libuv `-luv`, dynamic - **what Maven Central users get**. |
+| `true`            | `true`            | Distro libuv `-luv`; `-static` (Alpine `libuv-static`) on musl.  |
 
 ## The vendored-libuv stopgap
 
@@ -39,9 +39,10 @@ landscape:
 | Fedora rawhide                         | >= 1.52.0   | yes (`shuwariafrica/rawhide-jdk:17`)                       |
 | Alpine edge                            | >= 1.52.0   | yes (`shuwariafrica/alpine-edge-jdk:17`, dynamic + static) |
 
-The `vendor/libuv` git submodule lets contributors build emile on hosts whose distro libuv is too old. The cmake-built
-archive is linked into the test binary directly; no system libuv is touched. This is a **temporary** - until mainstream
-distros ship libuv 1.52+, at which point the submodule will be removed.
+When `useSystemLibUV` is `false` (the default), sbt-snx clones libuv (pinned to **1.52.1**) and cmake-builds a static
+archive, linked into the test binary directly; no system libuv is touched, and no git submodule or manual checkout is
+needed - `cmake` and `clang` are the only extra prerequisites. This is a **stopgap** - until mainstream distros ship
+libuv 1.52+, at which point the vendored build can be dropped in favour of the system libuv.
 
 ## Running tests locally
 
@@ -54,11 +55,10 @@ EMILE_SYSTEM_LIBUV=true sbt "emile/testOnly *" "emile-fs2/testOnly *"
 ### With the vendored fallback (any host with cmake + clang)
 
 ```bash
-git submodule update --init vendor/libuv
 sbt "emile/testOnly *" "emile-fs2/testOnly *"
 ```
 
-(`emileSystemLibUV` defaults to `false`, so the submodule is used.)
+(`useSystemLibUV` defaults to `false`, so sbt-snx clones and cmake-builds libuv automatically - no submodule step.)
 
 ### Reproducing a CI cell verbatim with Docker
 
