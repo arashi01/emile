@@ -1,4 +1,4 @@
-scalaVersion := "3.8.3"
+scalaVersion := "3.8.4"
 organization := "io.github.arashi01"
 description := "Scala Native async I/O library backed by libuv."
 startYear := Some(2025)
@@ -19,7 +19,7 @@ scmInfo := Some(
 val emile =
   project
     .in(file("modules/emile"))
-    .enablePlugins(ScalaNativePlugin, EmileNativeBuild)
+    .enablePlugins(SNXPlugin, EmileNativeBuild)
     .settings(description := "Scala Native async I/O library backed by libuv, integrated with cats-effect.")
     .settings(commonSettings)
     .settings(publishSettings)
@@ -31,11 +31,12 @@ val emile =
     .settings(libraryDependencies += Dependencies.`boilerplate-effect`)
     .settings(libraryDependencies += Dependencies.`munit` % Test)
     .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
+    .settings(nativeSettings)
 
 val `emile-fs2` =
   project
     .in(file("modules/emile-fs2"))
-    .enablePlugins(ScalaNativePlugin, EmileNativeBuild)
+    .enablePlugins(SNXPlugin, EmileNativeBuild)
     .dependsOn(emile)
     .settings(description := "fs2-networking interop for emile: TcpSocket/TcpServer adapters to fs2.io.net.Socket.")
     .settings(commonSettings)
@@ -43,6 +44,7 @@ val `emile-fs2` =
     .settings(libraryDependencies += Dependencies.`fs2-io`)
     .settings(libraryDependencies += Dependencies.`munit` % Test)
     .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
+    .settings(nativeSettings)
 
 val `emile-root` =
   project
@@ -89,7 +91,19 @@ def commonSettings: Seq[Setting[?]] = Seq(
     val years = if start == current then s"$current" else s"$start, $current"
     Some(HeaderLicense.ALv2(years, "Ali Rashid"))
   },
-  headerEmptyLine := false
+  headerEmptyLine := false,
+  libraryDependencySchemes += "org.scala-native" % "test-interface_native0.5_3" % "always"
+)
+
+def nativeSettings: Seq[Setting[?]] = Seq(
+  // travels in the published NIR descriptor so a downstream consumer links libuv with no restatement.
+  SNX.libraries := { case Linux(_, _) => Seq(NativeLibrary("uv")) },
+  SNX.libraries ++= (if useSystemLibUV.value then Seq.empty else Seq(Dependencies.vendoredLibUV % Test)),
+  // emile drives a multithreaded cats-effect runtime: force multithreading on the test link and require it of consumers.
+  SNX.flags := { case Linux(_, _) => Flags.multithreaded },
+  // -no-pie defensively for us until the non-PIC relocation source issue is resolved.
+  SNX.modifiers += Modifier.platform { case Linux(_, _) => _.linkOptions("-no-pie") },
+  Test / SNX.modifiers += Modifier.platform { case Linux(_, Musl) if staticTestLink.value => _.linkOptions("-static") }
 )
 
 def publishSettings: Seq[Setting[?]] = Seq(

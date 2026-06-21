@@ -45,8 +45,8 @@ for env_var in TERM CI SBT_OPTS EMILE_SYSTEM_LIBUV EMILE_STATIC_LINK; do
   fi
 done
 
-# The vendored-libuv build stamps with `git rev-parse` (EmileNativeBuild.scala);
-# safe.directory '*' clears git's dubious-ownership guard on the bind mount.
+# sbt-version resolves the build version via git, and sbt-snx clones libuv with git;
+# safe.directory '*' clears git's dubious-ownership guard on the bind-mounted repo.
 exec docker run "${docker_args[@]}" --entrypoint sh "$DOCKER_IMAGE" -c \
   'mkdir -p "$HOME" && git config --global --add safe.directory "*" && exec sbt "$@"' \
   sh "${extra_args[@]}" "$@"

@@ -216,8 +216,10 @@ Code that takes `Network[F]` as a constraint cannot be backed by emile through a
 
 ## Linking emile in your project
 
-emile's libuv bindings resolve at your application's `nativeLink` time. Add the linker option for libuv to your own
-`nativeConfig`:
+emile's `@extern` libuv bindings carry no `@link`, so the `-luv` linker option is supplied by the build. If you build
+with **sbt-snx**, emile's published descriptor declares it and the option is folded into your link automatically - no
+configuration needed. With the **official sbt-scala-native plugin**, add it to your own `nativeConfig` at `nativeLink`
+time:
 
 ```scala
 // build.sbt
@@ -230,7 +232,7 @@ nativeConfig := nativeConfig.value.withLinkingOptions(
 ```
 
 For a fully-static binary, add `-static` alongside `-luv` and ensure your build environment provides a static libuv
-archive (Alpine edge's `libuv-static` package does; most distros ship only the shared library).
+archive (Alpine edge's `libuv-static` package does).
 
 For building emile itself from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
