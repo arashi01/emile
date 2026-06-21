@@ -9,7 +9,7 @@ object Dependencies:
   val `ip4s-core` = "com.comcast" %% "ip4s-core" % "3.8.0"
   val `boilerplate` = "io.github.arashi01" %% "boilerplate" % "0.8.2"
   val `boilerplate-effect` = boilerplate.withName("boilerplate-effect")
-  val `munit` = "org.scalameta" %% "munit" % "1.3.0"
+  val `munit` = "org.scalameta" %% "munit" % "1.3.3"
   val `munit-cats-effect` = "org.typelevel" %% "munit-cats-effect" % "2.2.0"
 
   def vendoredLibUV = NativeLibrary(
