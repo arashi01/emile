@@ -46,6 +46,20 @@ val `emile-fs2` =
     .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
     .settings(nativeSettings)
 
+// Concurrency stress + invariant suites, off the `emile-root` aggregate: run explicitly
+// (`emile-stress/testOnly *`), not in the unit-test job; they force their own aggressive auto-cede runtime.
+val `emile-stress` =
+  project
+    .in(file("modules/emile-stress"))
+    .enablePlugins(SNXPlugin, EmileNativeBuild)
+    .dependsOn(emile)
+    .settings(description := "emile concurrency stress and invariant suites (off-aggregate; aggressive runtime).")
+    .settings(commonSettings)
+    .settings(publish / skip := true)
+    .settings(libraryDependencies += Dependencies.`munit` % Test)
+    .settings(libraryDependencies += Dependencies.`munit-cats-effect` % Test)
+    .settings(nativeSettings)
+
 val `emile-root` =
   project
     .in(file("."))

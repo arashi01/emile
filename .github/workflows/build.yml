@@ -152,9 +152,26 @@ jobs:
             exit 1
           fi
 
+  stress:
+    name: "Concurrency invariants"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOCKER_IMAGE: shuwariafrica/rawhide-jdk:17
+      EMILE_SYSTEM_LIBUV: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up Coursier cache
+        uses: coursier/cache-action@v8
+      - name: "Run concurrency-invariant suites"
+        run: ./project/scripts/run-sbt.sh -batch "emile-stress/testOnly *"
+
   publish:
     name: Publish Binaries
-    needs: [test_native, link_vendored, static-analysis]
+    needs: [test_native, link_vendored, static-analysis, stress]
     if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     container: shuwariafrica/el10-jdk:17

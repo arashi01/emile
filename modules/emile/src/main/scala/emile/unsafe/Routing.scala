@@ -24,37 +24,52 @@ import scala.util.control.NonFatal
 
 import cats.effect.IO
 
+import emile.EmileError
+
 /** Worker-affinity routing: runs a thunk on the libuv loop thread that owns a [[LibuvPoller]], with
   * a cancellation finaliser on the cross-thread path.
   */
 private[emile] object Routing:
 
-  /** Run `thunk` on `poller`'s loop thread. The fast path - caller already on the owner thread - is
-    * a direct `IO`; the slow path submits the work across threads and yields a finaliser that
-    * removes the still-queued runnable.
+  /** Run `thunk` on the thread that owns `poller`'s loop.
     *
-    * The fast-vs-slow choice sits inside `IO.defer`, so it is decided by the thread that *runs* the
-    * result, not the one that built it. This is load-bearing: a cancellation finaliser is built
-    * while the `IO.async` body runs on the owner, yet cats-effect runs it on whichever worker
-    * processes the cancellation - re-checking ownership at run time routes it back.
+    * The ownership check and the fast-path run of `thunk` occupy a single `IO.delay` node by
+    * design: cats-effect can auto-cede between nodes and a stealing worker would otherwise run
+    * `thunk` - an off-thread libuv call, i.e. a native data race on the loop. A rescheduled node
+    * re-runs and re-checks ownership wholesale, so the guarantee survives work-stealing. Off the
+    * owner the node yields `Left` and the call is submitted to the loop thread, with a finaliser
+    * that removes the still-queued runnable on cancellation.
     */
   def onOwner[A](poller: LibuvPoller)(thunk: => A): IO[A] =
-    IO.defer:
-      if poller.isOwnerThread then IO(thunk)
-      else
+    IO.delay {
+      if poller.isOwnerThread then Right(runOnOwner(thunk))
+      else Left(())
+    }.flatMap {
+      case Right(outcome) => IO.fromEither(outcome)
+      case Left(()) =>
         IO.async[A]: cb =>
           IO.delay:
-            val runnable: Runnable = () =>
-              // Direct try/catch, not Try(thunk).toEither - avoids the intermediate Try
-              // allocation on the cross-thread path; NonFatal matches Try's catch set exactly.
-              val outcome: Either[Throwable, A] =
-                try Right(thunk)
-                catch case NonFatal(t) => Left(t)
-              cb(outcome)
+            val runnable: Runnable = () => cb(runOffOwner(thunk))
             if poller.submit(runnable) then Some(IO.delay { poller.remove(runnable): Unit; () })
             else
-              cb(Left(new IllegalStateException("emile: poller closed")))
+              cb(Left(EmileError.Io.AlreadyClosed))
               None
+    }
+
+  /** Fast path: run `thunk` on the owner. Only `NonFatal` is captured; a fatal throw propagates to
+    * cats-effect's fatal handler.
+    */
+  private def runOnOwner[A](thunk: => A): Either[Throwable, A] =
+    try Right(thunk)
+    catch case NonFatal(t) => Left(t)
+
+  /** Cross-thread path: run `thunk` from the submitted runnable. Captures *every* throwable so the
+    * `IO.async` callback always fires - a fatal escaping here is swallowed by the poller's
+    * `taskDrainCb`, hanging the fibre on a callback that never completes.
+    */
+  private def runOffOwner[A](thunk: => A): Either[Throwable, A] =
+    try Right(thunk)
+    catch case t: Throwable => Left(t)
 
   /** Close `handle` on `poller`'s loop thread, completing once libuv's close callback has fired and
     * freed the handle's C memory - the canonical release step for a libuv handle. The completion

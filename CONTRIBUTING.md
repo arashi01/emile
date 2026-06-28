@@ -60,6 +60,16 @@ sbt "emile/testOnly *" "emile-fs2/testOnly *"
 
 (`useSystemLibUV` defaults to `false`, so sbt-snx clones and cmake-builds libuv automatically - no submodule step.)
 
+### Concurrency stress suite
+
+`emile-stress` holds the concurrency-invariant suites (e.g. `AffinitySpec`), off the default aggregate and run
+explicitly. They build their own forced aggressive auto-cede runtime so scheduler races surface (the default
+thresholds hide them). CI runs them on every change (the `stress` job); locally:
+
+```bash
+EMILE_SYSTEM_LIBUV=true sbt "emile-stress/testOnly *"
+```
+
 ### Reproducing a CI cell verbatim with Docker
 
 ```bash
@@ -73,9 +83,10 @@ named image and forwards `EMILE_SYSTEM_LIBUV` / `EMILE_STATIC_LINK` into the con
 
 ## Style and gates
 
-- **Compiler flags.** `build.sbt`'s `baseCompilerOptions` + `compilerOptions` are binding and apply to both
-  `Compile/compile` and `Test/compile`. `-Werror`, `-Yexplicit-nulls`, `-language:strictEquality`,
-  `-Yrequire-targetName`, `-Ycheck-reentrant`, `-Wvalue-discard`, `-Wnonunit-statement`, the full `-Wunused:*` set.
+- **Compiler flags.** `build.sbt`'s `compilerOptions` are binding and apply to both `Compile/compile` and
+  `Test/compile`. `-Werror`, `-Yexplicit-nulls`, `-language:strictEquality`, `-Yrequire-targetName`,
+  `-Ycheck-reentrant`, `-Wvalue-discard`, `-Wnonunit-statement`, and the `-Wunused:*` checks (implicits, explicits,
+  imports, locals, params, privates).
 - **scalafix.** `.scalafix.conf` enforces `DisableSyntax` (`noVars`, `noWhileLoops`, `noReturns`, `noNulls`, `noThrows`,
   `noAsInstanceOf`, ...). Justified FFI / hot-path deviations carry an in-source suppression
   (`// scalafix:off DisableSyntax` region or `// scalafix:ok` per-line) with a terse cost-justification comment.
@@ -93,6 +104,7 @@ an unsuppressed `DisableSyntax` lint or a compile failure fails the run.
 4. Run the tests locally:
     - host with libuv 1.52+: `EMILE_SYSTEM_LIBUV=true sbt "emile/testOnly *" "emile-fs2/testOnly *"`
     - vendored fallback otherwise: `sbt "emile/testOnly *" "emile-fs2/testOnly *"`
+    - concurrency or lifetime changes: also `EMILE_SYSTEM_LIBUV=true sbt "emile-stress/testOnly *"`
 5. Push and open a PR. Ensure all CI jobs are green.
 
 ## Licence
