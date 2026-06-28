@@ -82,13 +82,13 @@ object TcpServer:
     CallbackBridge.store(poller, handle, state)
     state
 
-  /** Server release: clear the bridge then `uv_close` and await. The connection queue is fed only
-    * from the loop thread, so once the close completes there is no in-flight producer.
+  /** Release the listener via [[Routing.closeHandle]] alone. `closeHandle` stores its own
+    * completion over the handle's `data` slot and `uv_close`s it in one owner-thread step, which
+    * stops any further `connection_cb`; a separate pre-clear would instead open a window where a
+    * `connection_cb` reads a nulled slot and dereferences it across the C ABI.
     */
   private[emile] def release(server: TcpServer): IO[Unit] =
-    Routing
-      .onOwner(server.poller)(CallbackBridge.clear(server.poller, server.handle))
-      .flatMap(_ => Routing.closeHandle(server.poller, server.handle))
+    Routing.closeHandle(server.poller, server.handle)
 
   /** `uv_connection_cb` - run on the server's loop thread. Recovers the server state through the
     * handle's `data` slot and offers the connection signal to the queue. A negative status is an
@@ -100,11 +100,15 @@ object TcpServer:
     val signal: Either[EmileError.Io, Unit] = if status < 0 then Left(IoMapping.fromCode(status)) else Right(())
     state.connections.unsafeOffer(signal)
 
+  // The wait is cancelable, but the take -> uv_accept transition is not: a cancel that has consumed a
+  // connection signal must still run uv_accept, or the accepted fd is stranded and the listener stalls.
   private def acceptNext(server: TcpServer): EmIO[EmileError.Io, TcpSocket] =
     EffIO.lift(
-      server.connections.take.flatMap:
-        case Left(error) => IO.pure(Left(error))
-        case Right(()) => Routing.onOwner(server.poller)(performAccept(server))
+      IO.uncancelable { poll =>
+        poll(server.connections.take).flatMap:
+          case Left(error) => IO.pure(Left(error))
+          case Right(()) => Routing.onOwner(server.poller)(performAccept(server))
+      }
     )
 
   // FFI: client handle calloc with throw-on-OOM, uv_close cleanup of a half-built client.

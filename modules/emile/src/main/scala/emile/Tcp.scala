@@ -139,6 +139,8 @@ object Tcp:
           val server = TcpServer.construct(handle, poller, local, queue)
           val listenRc = LibUV.uv_listen(handle, options.listenBacklog, TcpServer.connectionCb)
           if listenRc != 0 then
+            // construct anchored the server in the data slot; clear it before uv_close or it leaks.
+            CallbackBridge.clear(poller, handle)
             LibUV.uv_close(handle, freeHandleCb)
             Left(BindMapping.fromCode(listenRc))
           else Right(server)
