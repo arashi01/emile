@@ -173,8 +173,9 @@ object LibuvPoller:
   private inline def pollerOf(handle: Ptr[Byte]): LibuvPoller =
     Intrinsics.castRawPtrToObject(toRawPtr(LibUV.uv_handle_get_data(handle))).asInstanceOf[LibuvPoller]
 
-  /** Drains the cross-thread task queue. A runnable's throw is swallowed - it cannot cross the C
-    * ABI, and the runnables are `IO.async` resumptions whose failures cats-effect handles itself.
+  /** Drains the cross-thread task queue. The submitted runnables capture every throwable and
+    * complete their own `IO.async` callback, so this blanket catch is only a backstop: a throw must
+    * never cross the C ABI.
     */
   private val taskDrainCb: LibUV.AsyncCB = (handle: Ptr[Byte]) =>
     val poller = pollerOf(handle)
