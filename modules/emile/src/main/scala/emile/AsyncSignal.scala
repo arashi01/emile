@@ -15,91 +15,65 @@
  */
 package emile
 
-import scala.scalanative.libc.stdlib
-import scala.scalanative.unsafe.Ptr
-import scala.scalanative.unsigned.*
-
 import boilerplate.effect.EffIO
 import cats.effect.IO
+import cats.effect.Ref
 import cats.effect.Resource
-import cats.effect.std.unsafe.UnboundedQueue
+import cats.effect.std.Queue
 import fs2.Stream
 
-import emile.unsafe.CallbackBridge
-import emile.unsafe.LibUV
-import emile.unsafe.LibUVPoller
-import emile.unsafe.Routing
+final private class AsyncSignalState(val wakeups: Queue[IO, Unit], val consuming: Ref[IO, Boolean])
 
-final private class AsyncSignalState(
-  val handle: Ptr[Byte],
-  val poller: LibUVPoller,
-  val wakeups: UnboundedQueue[IO, Unit]
-)
-
-/** A thread-safe event-loop wake-up, backed by a libuv `uv_async_t`. The handle lives on the worker
-  * that acquires the resource; [[AsyncSignal$ AsyncSignal]].fire wakes that loop from any thread.
+/** A cross-fibre / cross-thread wake-up: a [[AsyncSignal$ AsyncSignal]].fire from anywhere surfaces
+  * on the [[AsyncSignal$ AsyncSignal]].fires stream. A cats-effect-backed convenience - typed
+  * errors, a `Resource` lifecycle, and coalescing - not a libuv handle. It coalesces like an
+  * edge-triggered signal: a capacity-one circular buffer keeps only the latest pending wake-up, so
+  * N rapid fires surface as M (`<=` N) elements. The stream is drained by a single subscriber.
   */
 opaque type AsyncSignal = AsyncSignalState
 
-/** Resource, accessors, and equality for [[AsyncSignal]]. */
+/** Resource, the fire / fires operations, and equality for [[AsyncSignal]]. */
 object AsyncSignal:
 
-  /** A scoped `uv_async_t`. The handle is created on - and closed back on - the loop of the worker
-    * the resource is acquired on.
-    */
+  /** A scoped wake-up. It holds nothing native, so the resource only scopes the signal's lifetime. */
   def resource: EmResource[EmileError.IO, AsyncSignal] =
-    Resource.make[EffIO.Of[EmileError.IO], AsyncSignal](acquire)(release)
+    Resource.eval(acquire)
 
   given CanEqual[AsyncSignal, AsyncSignal] = CanEqual.derived
 
   extension (signal: AsyncSignal)
-    /** Wakes the owning loop; thread-safe and callable from any thread, as `uv_async_send` is
-      * libuv's cross-thread primitive.
+    /** Wakes a pending [[fires]] taker, from any fibre or thread. Coalescing: an offer to the
+      * capacity-one buffer replaces an unconsumed wake-up rather than queueing, so rapid fires
+      * collapse - an edge-triggered signal, not a counter.
       */
     def fire: EmIO[EmileError.IO, Unit] =
-      EffIO.suspend(LibUV.uv_async_send(signal.handle): Unit)
+      EffIO.liftF(signal.wakeups.offer(()))
 
-    /** A stream of wake-ups. libuv coalesces `uv_async_send`, so N fires may surface as M (<= N)
-      * elements - an edge-triggered signal, not a counter.
+    /** The wake-up stream, until the resource releases. Drained by one subscriber: a second
+      * concurrent `fires` fails fast with [[EmileError.IO.ConflictingOperation]].
       */
     def fires: EmStream[EmileError.IO, Unit] =
-      Stream.repeatEval(signal.wakeups.take).translate(EffIO.liftK)
+      Stream
+        .resource(consumer(signal))
+        .flatMap(_ => Stream.repeatEval[EmIO.Of[EmileError.IO], Unit](EffIO.liftF(signal.wakeups.take)))
+  end extension
 
   private def acquire: EmIO[EmileError.IO, AsyncSignal] =
-    EffIO.lift:
+    EffIO.liftF(
       for
-        poller <- LibUVPollingSystem.currentPoller
-        wakeups <- UnboundedQueue[IO, Unit]
-        handle <- IO(allocHandle())
-        result <- Routing.onOwner(poller)(install(poller, handle, wakeups))
-      yield result
+        wakeups <- Queue.circularBuffer[IO, Unit](1)
+        consuming <- IO.ref(false)
+      yield new AsyncSignalState(wakeups, consuming)
+    )
 
-  private def release(signal: AsyncSignal): EmIO[EmileError.IO, Unit] =
-    EffIO.liftF(Routing.closeHandle(signal.poller, signal.handle))
+  // Claims the single-consumer slot for the fires stream's scope, failing fast if already taken.
+  // Ref-based, not an owner-confined var: the rerouted signal has no loop thread to route through.
+  private def consumer(signal: AsyncSignalState): EmResource[EmileError.IO, Unit] =
+    Resource.make[EffIO.Of[EmileError.IO], Unit](
+      EffIO.lift(signal.consuming.modify(consuming => if consuming then (true, claimed) else (true, free)))
+    )(_ => EffIO.liftF(signal.consuming.set(false)))
 
-  private def install(
-    poller: LibUVPoller,
-    handle: Ptr[Byte],
-    wakeups: UnboundedQueue[IO, Unit]
-  ): Either[EmileError.IO, AsyncSignal] =
-    val rc = LibUV.uv_async_init(poller.loop, handle, asyncCb)
-    if rc != 0 then
-      stdlib.free(handle)
-      Left(IOMapping.fromCode(rc))
-    else
-      val state = new AsyncSignalState(handle, poller, wakeups)
-      CallbackBridge.store(poller, handle, state)
-      Right(state)
-
-  // uv_async_t allocation: a null calloc result is OOM, surfaced by a throw.
-  // scalafix:off DisableSyntax
-  private def allocHandle(): Ptr[Byte] =
-    val handle = stdlib.calloc(1.toCSize, LibUV.uv_handle_size(LibUV.UV_ASYNC))
-    if handle == null then throw new OutOfMemoryError("emile: uv_async_t allocation failed")
-    else handle
-  // scalafix:on DisableSyntax
-
-  // uv_async_cb: offer a wake-up to the subscriber queue; runs on the loop thread.
-  private val asyncCb: LibUV.AsyncCB = (handle: Ptr[Byte]) => CallbackBridge.load[AsyncSignalState](handle).wakeups.unsafeOffer(())
+  private val claimed: Either[EmileError.IO, Unit] = Left(EmileError.IO.ConflictingOperation)
+  private val free: Either[EmileError.IO, Unit] = Right(())
 
 end AsyncSignal

@@ -17,7 +17,13 @@ package emile
 
 import scala.concurrent.duration.*
 
-/** Covers [[AsyncSignal]]: a fire surfaces as an element of the fires stream. */
+import boilerplate.effect.EffIO
+import cats.effect.IO
+
+/** Covers [[AsyncSignal]]: a fire surfaces on the fires stream, rapid fires coalesce to a single
+  * pending wake-up, and a second concurrent consumer fails with
+  * [[EmileError.IO.ConflictingOperation]].
+  */
 final class AsyncSignalSpec extends EmileSuite:
 
   test("fire delivers a wake-up to fires") {
@@ -26,3 +32,43 @@ final class AsyncSignalSpec extends EmileSuite:
       .absolve
       .timeout(5.seconds)
   }
+
+  test("rapid fires coalesce to a single pending wake-up") {
+    AsyncSignal.resource
+      .use(signal =>
+        EffIO.liftF(
+          for
+            _ <- signal.fire.absolve *> signal.fire.absolve *> signal.fire.absolve
+            _ <- signal.fires.head.compile.drain.absolve
+            // the capacity-one buffer is now drained: a second wake-up must not be waiting, so the
+            // three fires collapsed to one
+            again <- signal.fires.head.compile.drain.absolve.timeout(300.millis).attempt
+            _ <- IO(assert(again.isLeft, s"expected the coalesced buffer to be empty, got: $again"))
+          yield ()
+        )
+      )
+      .absolve
+      .timeout(5.seconds)
+  }
+
+  test("a second concurrent fires consumer fails fast with ConflictingOperation") {
+    AsyncSignal.resource
+      .use(signal =>
+        EffIO.liftF(
+          for
+            // the first consumer holds the single-consumer slot; with no fire it blocks on take
+            consuming <- signal.fires.compile.drain.absolve.start
+            _ <- IO.sleep(100.millis)
+            result <- signal.fires.head.compile.toList.either
+            _ <- consuming.cancel
+            _ <- IO(result match
+                   case Left(EmileError.IO.ConflictingOperation) => ()
+                   case other => fail(s"expected ConflictingOperation, got: $other"))
+          yield ()
+        )
+      )
+      .absolve
+      .timeout(5.seconds)
+  }
+
+end AsyncSignalSpec
