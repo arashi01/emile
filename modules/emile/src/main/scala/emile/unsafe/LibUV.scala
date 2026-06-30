@@ -54,9 +54,11 @@ private[emile] object LibUV:
   type GetAddrInfoCB = CFuncPtr3[Ptr[Byte], CInt, Ptr[Byte], Unit]
   type GetNameInfoCB = CFuncPtr4[Ptr[Byte], CInt, CString, CString, Unit]
   type SignalCB = CFuncPtr2[Ptr[Byte], CInt, Unit]
+  type FSEventCB = CFuncPtr4[Ptr[Byte], CString, CInt, CInt, Unit]
 
   // uv_handle_type ordinals (for uv_handle_size).
   inline val UV_ASYNC = 1
+  inline val UV_FS_EVENT = 3
   inline val UV_NAMED_PIPE = 7
   inline val UV_POLL = 8
   inline val UV_TCP = 12
@@ -84,6 +86,10 @@ private[emile] object LibUV:
   inline val UV_WRITABLE = 2
   inline val UV_DISCONNECT = 4
   inline val UV_PRIORITIZED = 8
+
+  // uv_fs_event.
+  inline val UV_RENAME = 1
+  inline val UV_CHANGE = 2
 
   // uv_tcp_flags.
   inline val UV_TCP_IPV6ONLY = 1
@@ -185,6 +191,11 @@ private[unsafe] object LibUVExtern:
   def uv_signal_init(loop: Ptr[Byte], handle: Ptr[Byte]): CInt = extern
   def uv_signal_start(handle: Ptr[Byte], signalCb: LibUV.SignalCB, signum: CInt): CInt = extern
   def uv_signal_stop(handle: Ptr[Byte]): CInt = extern
+
+  // uv_fs_event_t: a path-change watcher (inotify on Linux). uv_close stops and frees it, so no
+  // separate stop binding is needed.
+  def uv_fs_event_init(loop: Ptr[Byte], handle: Ptr[Byte]): CInt = extern
+  def uv_fs_event_start(handle: Ptr[Byte], cb: LibUV.FSEventCB, path: CString, flags: CUnsignedInt): CInt = extern
 
   def uv_getaddrinfo(
     loop: Ptr[Byte],
