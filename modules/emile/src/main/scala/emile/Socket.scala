@@ -54,6 +54,12 @@ final private class StreamSocketState(
   var pendingWrites: Int = 0 // scalafix:ok DisableSyntax.var
   var sendFileActive: Boolean = false // scalafix:ok DisableSyntax.var
   var outputShutdown: Boolean = false // scalafix:ok DisableSyntax.var
+  // Single-reader guard. Every read mode drives the one per-socket readBuffer and the handle's single
+  // read-callback slot, so a second concurrent reader overwrites the first's in-flight read - silent
+  // corruption. Held for a read's whole span, including the f that consumes readPtr's raw buffer, so a
+  // concurrent reader fails fast instead. Owner-confined like the flags above.
+  var reading: Boolean = false // scalafix:ok DisableSyntax.var
+end StreamSocketState
 
 /** The kind of a connected stream socket - the phantom tag that distinguishes a TCP socket from an
   * [[IPC$ IPC]] (Unix-domain / named-pipe) one at the type level while they share one byte-stream
@@ -99,6 +105,11 @@ type AddressOf[K <: SocketKind] = K match
   * operation reaches the raw handle through [[emile.unsafe.LiveHandle LiveHandle]], so use after
   * the socket's resource has released is a typed [[EmileError.IO.AlreadyClosed]], not a
   * use-after-free.
+  *
+  * The read modes ([[reads]], [[read]], [[readN]], [[readPtr]], [[consume]]) share one per-socket
+  * buffer, so a socket has a single reader: starting one while another is in flight fails fast with
+  * [[EmileError.IO.ConflictingOperation]]. Reading and writing concurrently is fine - they are
+  * independent directions.
   */
 object Socket:
 
@@ -158,7 +169,7 @@ object Socket:
       _.chunks.foreach(chunk => socket.write(chunk))
 
     /** Half-close the write side via `uv_shutdown`; pending writes drain to the kernel first. Fails
-      * with [[EmileError.IO.ConflictingTransfer]] if a raw-fd [[sendFile]] is in flight, whose
+      * with [[EmileError.IO.ConflictingOperation]] if a raw-fd [[sendFile]] is in flight, whose
       * bytes the FIN would otherwise truncate.
       */
     def endOfOutput: EmIO[EmileError.IO, Unit] =
@@ -217,7 +228,7 @@ object Socket:
     /** Zero-copy kernel-to-socket via `uv_fs_sendfile` - one best-effort syscall, returning the
       * bytes actually sent, which may be fewer than `length` (0 when the socket send buffer is
       * full). It bypasses libuv's write queue, so a concurrent [[write]] or [[endOfOutput]] on the
-      * same socket fails fast with [[EmileError.IO.ConflictingTransfer]] rather than interleaving
+      * same socket fails fast with [[EmileError.IO.ConflictingOperation]] rather than interleaving
       * on the wire or truncating at the half-close (sequential `write` then `sendFile` is fine).
       * For a backpressured whole-file transfer use `file.reads.through(socket.writes)`.
       */
@@ -235,7 +246,8 @@ object Socket:
 
     /** Run `thunk` synchronously on the socket's owning loop thread - the public face of emile's
       * worker-affinity routing, for thread-confining consumer-side C state such as nghttp2's
-      * session.
+      * session. `thunk` runs on the loop thread, so it must not block or run long: until it returns
+      * it stalls all I/O on that worker.
       */
     @targetName("ext_onLoop")
     inline def onLoop[A](thunk: => A): EmIO[EmileError.IO, A] =
@@ -347,7 +359,33 @@ object Socket:
   private val readCb: LibUV.ReadCB = (handle: Ptr[Byte], nread: CSSize, buf: Ptr[LibUV.Buf]) =>
     CallbackBridge.load[ReadReceiver](handle).deliver(handle, nread, buf)
 
+  // The single-reader guard wrapping each public read entry. The claim is taken on the owner thread and
+  // released on every outcome; bracket takes it uncancelably, keeps the read itself cancelable, and skips
+  // the release when the claim was not taken. The persistent reads stream uses readingResource for the
+  // same effect across the Resource scope.
+  private def withReading[A](socket: StreamSocketState)(body: => EmIO[EmileError.IO, A]): EmIO[EmileError.IO, A] =
+    acquireReading(socket).bracket(_ => body)(_ => releaseReading(socket))
+
+  private def readingResource(socket: StreamSocketState): EmResource[EmileError.IO, Unit] =
+    Resource.make[EffIO.Of[EmileError.IO], Unit](acquireReading(socket))(_ => EffIO.liftF(releaseReading(socket)))
+
+  private def acquireReading(socket: StreamSocketState): EmIO[EmileError.IO, Unit] =
+    EffIO.lift(Routing.onOwner(poller(socket))(LiveHandle.tryUse(socket.live, closedIo)(_ => claimReading(socket))))
+
+  // Owner-thread check-and-set of the single-reader flag.
+  private def claimReading(socket: StreamSocketState): Either[EmileError.IO, Unit] =
+    if socket.reading then Left(EmileError.IO.ConflictingOperation)
+    else
+      socket.reading = true
+      Right(())
+
+  private def releaseReading(socket: StreamSocketState): IO[Unit] =
+    Routing.onOwner(poller(socket))(socket.reading = false)
+
   private def readOnce(socket: StreamSocketState, maxBytes: Int): EmIO[EmileError.IO, Option[Chunk[Byte]]] =
+    withReading(socket)(readOnceArm(socket, maxBytes))
+
+  private def readOnceArm(socket: StreamSocketState, maxBytes: Int): EmIO[EmileError.IO, Option[Chunk[Byte]]] =
     EffIO.attempt(
       IO.async[Option[Chunk[Byte]]] { cb =>
         Routing.onOwner(poller(socket)):
@@ -385,15 +423,28 @@ object Socket:
     )
 
   private def readNBytes(socket: StreamSocketState, numBytes: Int): EmIO[EmileError.IO, Chunk[Byte]] =
+    withReading(socket)(readNBytesLoop(socket, numBytes))
+
+  // Accumulates across bare-arm reads under one held claim, so a concurrent reader cannot interleave
+  // between the chunks and steal bytes from the stream.
+  private def readNBytesLoop(socket: StreamSocketState, numBytes: Int): EmIO[EmileError.IO, Chunk[Byte]] =
     def go(acc: Chunk[Byte]): EmIO[EmileError.IO, Chunk[Byte]] =
       if acc.size >= numBytes then EffIO.succeed(acc)
       else
-        readOnce(socket, numBytes - acc.size).flatMap:
+        readOnceArm(socket, numBytes - acc.size).flatMap:
           case Some(chunk) => go(acc ++ chunk)
           case None => EffIO.succeed(acc)
     go(Chunk.empty[Byte])
 
   private def readPtrOnce[A](
+    socket: StreamSocketState,
+    f: (Ptr[Byte], Int) => EmIO[EmileError.IO, A]
+  ): EmIO[EmileError.IO, Option[A]] =
+    withReading(socket)(readPtrOnceArm(socket, f))
+
+  // The deliver stops the watch before f runs, and withReading holds the claim across f, so the raw
+  // buffer view stays stable: no concurrent read can re-arm and overwrite it while f reads it.
+  private def readPtrOnceArm[A](
     socket: StreamSocketState,
     f: (Ptr[Byte], Int) => EmIO[EmileError.IO, A]
   ): EmIO[EmileError.IO, Option[A]] =
@@ -446,7 +497,7 @@ object Socket:
     var terminated: Boolean = false
 
   private def readsResource(socket: StreamSocketState): EmResource[EmileError.IO, ReadsState] =
-    Resource.make[EffIO.Of[EmileError.IO], ReadsState](readsAcquire(socket))(readsRelease)
+    readingResource(socket).flatMap(_ => Resource.make[EffIO.Of[EmileError.IO], ReadsState](readsAcquire(socket))(readsRelease))
 
   private def readsAcquire(socket: StreamSocketState): EmIO[EmileError.IO, ReadsState] =
     EffIO.lift(
@@ -531,6 +582,9 @@ object Socket:
       state.queue.unsafeTryOffer(Left(EmileError.IO.AlreadyClosed)): Unit
 
   private def consumeAll(socket: StreamSocketState, onChunk: (Ptr[Byte], Int) => Unit): EmIO[EmileError.IO, Unit] =
+    withReading(socket)(consumeAllArm(socket, onChunk))
+
+  private def consumeAllArm(socket: StreamSocketState, onChunk: (Ptr[Byte], Int) => Unit): EmIO[EmileError.IO, Unit] =
     EffIO.attempt(
       IO.async[Unit] { cb =>
         Routing.onOwner(poller(socket)):
@@ -626,7 +680,7 @@ object Socket:
     cb: Either[Throwable, Unit] => Unit,
     keepAlive: AnyRef
   ): Unit =
-    if socket.sendFileActive then cb(Left(EmileError.IO.ConflictingTransfer))
+    if socket.sendFileActive then cb(Left(EmileError.IO.ConflictingOperation))
     else
       val req = allocWriteReq()
       val bufs = stackalloc[LibUV.Buf]()
@@ -653,7 +707,7 @@ object Socket:
     EffIO.lift(
       Routing.onOwner(poller(socket)):
         LiveHandle.tryUse[Either[EmileError.IO, Int]](socket.live, Left(EmileError.IO.AlreadyClosed)): handle =>
-          if socket.sendFileActive then Left(EmileError.IO.ConflictingTransfer)
+          if socket.sendFileActive then Left(EmileError.IO.ConflictingOperation)
           else if len <= 0 then Right(0)
           else
             val bufs = stackalloc[LibUV.Buf]()
@@ -679,7 +733,7 @@ object Socket:
             // A queued write, another sendFile in flight, or a half-closed write side would interleave
             // with or truncate this raw-fd write (it bypasses libuv's write queue and FIN ordering).
             if socket.pendingWrites > 0 || socket.sendFileActive || socket.outputShutdown then
-              cb(Left(EmileError.IO.ConflictingTransfer))
+              cb(Left(EmileError.IO.ConflictingOperation))
               None
             else startSendFile(socket, handle, file, offset, length, cb)
       },
@@ -764,7 +818,7 @@ object Socket:
         LiveHandle.tryUse(socket.live, closedAsync(cb)): handle =>
           // A raw-fd sendFile is in flight outside libuv's write queue; uv_shutdown would send FIN past
           // it and truncate the stream. Fail fast rather than corrupt the transfer.
-          if socket.sendFileActive then cb(Left(EmileError.IO.ConflictingTransfer))
+          if socket.sendFileActive then cb(Left(EmileError.IO.ConflictingOperation))
           else
             val req = allocShutdownReq()
             val rc = LibUV.uv_shutdown(req, handle, shutdownCb)

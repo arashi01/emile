@@ -105,8 +105,8 @@ object EmileError:
     case object ConnectionReset extends EmileError("Connection reset", None) with IO
     case object BrokenPipe extends EmileError("Broken pipe", None) with IO
     case object AlreadyClosed extends EmileError("Resource already closed", None) with IO
-    case object ConflictingTransfer
-        extends EmileError("A sendFile cannot overlap a concurrent write, sendFile, or half-close on the same socket", None)
+    case object ConflictingOperation
+        extends EmileError("A concurrent operation conflicts with one already in flight on this resource", None)
         with IO
 
     final case class System(code: ErrorCode) extends EmileError("", None) with IO:

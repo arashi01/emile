@@ -28,9 +28,10 @@ import com.comcast.ip4s.SocketAddress
 
 /** Covers the socket lifecycle under concurrency and after release: [[StreamServer.accepted]] keeps
   * each socket valid for its handler's `use` scope even when many run at once (the `server` preset
-  * is used, so the finish-socket options are also applied on the accept path), and an operation on
-  * a socket whose resource has released fails with [[EmileError.IO.AlreadyClosed]] rather than a
-  * use-after-free.
+  * is used, so the finish-socket options are also applied on the accept path), an operation on a
+  * socket whose resource has released fails with [[EmileError.IO.AlreadyClosed]] rather than a
+  * use-after-free, and a second concurrent read fails with [[EmileError.IO.ConflictingOperation]]
+  * rather than corrupting the shared read buffer.
   */
 final class LifecycleSpec extends EmileSuite:
 
@@ -62,6 +63,15 @@ final class LifecycleSpec extends EmileSuite:
       )
       .absolve
       .timeout(5.seconds)
+  }
+
+  test("a second concurrent read fails fast with ConflictingOperation, not buffer corruption") {
+    TCP
+      .bind(anyLoopback, TCPOptions.server)
+      .widen[EmileError]
+      .use(server => EffIO.liftF(conflictingRead(server)))
+      .absolve
+      .timeout(10.seconds)
   }
 
   private def concurrentEcho(server: TCPServer, payload: Chunk[Byte], n: Int): IO[Unit] =
@@ -98,5 +108,30 @@ final class LifecycleSpec extends EmileSuite:
         .absolve
     srvWork.background.use(_ => Stream.emits(0 until n).covary[IO].parEvalMapUnordered(n)(_ => client).compile.drain)
   end concurrentEcho
+
+  // The server holds every accepted socket open without sending, so the client's first read blocks and
+  // stays armed; a concurrent second read must then fail fast rather than race the shared read buffer.
+  private def conflictingRead(server: TCPServer): IO[Unit] =
+    val hold = server.accepted.parEvalMapUnordered(4)(_.use(_ => EffIO.liftF(IO.never[Unit]))).compile.drain.absolve
+    hold.background.use(_ =>
+      TCP
+        .connect(server.address)
+        .widen[EmileError]
+        .use(socket =>
+          EffIO.liftF(
+            for
+              blocked <- socket.read(4096).absolve.start
+              _ <- IO.sleep(150.millis)
+              result <- socket.read(4096).either
+              _ <- blocked.cancel
+              _ <- IO(result match
+                     case Left(EmileError.IO.ConflictingOperation) => ()
+                     case other => fail(s"expected ConflictingOperation, got: $other"))
+            yield ()
+          )
+        )
+        .absolve
+    )
+  end conflictingRead
 
 end LifecycleSpec

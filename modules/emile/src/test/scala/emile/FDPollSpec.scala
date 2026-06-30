@@ -20,10 +20,13 @@ import scala.scalanative.posix.unistd
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
 
+import boilerplate.effect.EffIO
 import cats.effect.IO
 import cats.effect.Resource
 
-/** Covers [[FDPoll]]: await reports a descriptor that has become readable. */
+/** Covers [[FDPoll]]: one-shot `await` reports a readable descriptor, persistent `awaits` re-arms
+  * across deliveries on one handle, and using a released watcher is a typed error.
+  */
 final class FDPollSpec extends EmileSuite:
 
   test("await fires Readable when the pipe becomes readable") {
@@ -31,6 +34,49 @@ final class FDPollSpec extends EmileSuite:
       val poll = FDPoll.resource(readFd, Set(FDEvent.Readable)).use(_.await).absolve
       val write = IO.sleep(100.millis) *> IO(writeByte(writeFd))
       poll.both(write).timeout(5.seconds).map((events, _) => assert(events.contains(FDEvent.Readable)))
+  }
+
+  test("awaits re-arms and reports readiness repeatedly on one handle") {
+    pipeResource.use: (readFd, writeFd) =>
+      // The byte is never read, so the pipe stays readable; each re-armed poll fires again, so one
+      // write yields three deliveries only if the stream re-arms across them.
+      val events = FDPoll.resource(readFd, Set(FDEvent.Readable)).use(_.awaits.take(3).compile.toList).absolve
+      val write = IO.sleep(100.millis) *> IO(writeByte(writeFd))
+      events
+        .both(write)
+        .timeout(5.seconds)
+        .map((es, _) => assert(es.size == 3 && es.forall(_.contains(FDEvent.Readable)), s"expected 3 Readable, got: $es"))
+  }
+
+  test("await on a released watcher is a typed AlreadyClosed, not a use-after-free") {
+    pipeResource.use: (readFd, _) =>
+      (for
+        leaked <- FDPoll.resource(readFd, Set(FDEvent.Readable)).use(poll => EffIO.succeed(poll)).absolve
+        result <- leaked.await.either
+      yield assertEquals(result, Left(EmileError.IO.AlreadyClosed): Either[EmileError.IO, Set[FDEvent]]))
+        .timeout(5.seconds)
+  }
+
+  test("a second concurrent await fails fast with ConflictingOperation") {
+    pipeResource.use: (readFd, _) =>
+      FDPoll
+        .resource(readFd, Set(FDEvent.Readable))
+        .use(poll =>
+          EffIO.liftF(
+            for
+              // The pipe is never written, so the first await arms and blocks; the second conflicts.
+              blocked <- poll.await.absolve.start
+              _ <- IO.sleep(100.millis)
+              result <- poll.await.either
+              _ <- blocked.cancel
+              _ <- IO(result match
+                     case Left(EmileError.IO.ConflictingOperation) => ()
+                     case other => fail(s"expected ConflictingOperation, got: $other"))
+            yield ()
+          )
+        )
+        .absolve
+        .timeout(5.seconds)
   }
 
   private def writeByte(fd: Int): Unit =

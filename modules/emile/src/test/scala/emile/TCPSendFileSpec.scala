@@ -127,7 +127,7 @@ final class TCPSendFileSpec extends EmileSuite:
     srvWork.background.use(_ => cliWork)
   end readsThroughEcho
 
-  test("sendFile concurrent with an in-flight write fails fast with ConflictingTransfer") {
+  test("sendFile concurrent with an in-flight write fails fast with ConflictingOperation") {
     val content: Array[Byte] = "emile conflict probe".getBytes("UTF-8")
     tempFile(content)
       .use(path =>
@@ -163,8 +163,8 @@ final class TCPSendFileSpec extends EmileSuite:
                   result <- socket.sendFile(file, 0L, content.length.toLong).either
                   _ <- writer.cancel
                   _ <- IO(result match
-                         case Left(EmileError.IO.ConflictingTransfer) => ()
-                         case other => fail(s"expected ConflictingTransfer, got: $other"))
+                         case Left(EmileError.IO.ConflictingOperation) => ()
+                         case other => fail(s"expected ConflictingOperation, got: $other"))
                 yield ()
               )
             )
@@ -174,7 +174,7 @@ final class TCPSendFileSpec extends EmileSuite:
     srvWork.background.use(_ => cliWork)
   end conflictEcho
 
-  test("sendFile after a half-close fails fast with ConflictingTransfer") {
+  test("sendFile after a half-close fails fast with ConflictingOperation") {
     val content: Array[Byte] = "emile half-close conflict probe".getBytes("UTF-8")
     tempFile(content)
       .use(path =>
@@ -208,8 +208,8 @@ final class TCPSendFileSpec extends EmileSuite:
                   _ <- socket.endOfOutput.absolve
                   result <- socket.sendFile(file, 0L, content.length.toLong).either
                   _ <- IO(result match
-                         case Left(EmileError.IO.ConflictingTransfer) => ()
-                         case other => fail(s"expected ConflictingTransfer, got: $other"))
+                         case Left(EmileError.IO.ConflictingOperation) => ()
+                         case other => fail(s"expected ConflictingOperation, got: $other"))
                 yield ()
               )
             )
