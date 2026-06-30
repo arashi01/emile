@@ -146,9 +146,11 @@ arms a `uv_timer_t` to bound each loop iteration's wait, so sleeps fire on time.
 ### Signal
 
 ```scala
+import boilerplate.effect.EffIO
+import cats.effect.IO
 import emile.SignalNumber.*
 
-Signal.watch(SIGUSR1).evalMap(_ => IO.println("got SIGUSR1")).compile.drain
+Signal.watch(SIGUSR1).evalMap(_ => EffIO.liftF(IO.println("got SIGUSR1"))).compile.drain
 Signal.termination.head.compile.drain // SIGINT|SIGTERM, once
 ```
 
@@ -183,6 +185,26 @@ FDPoll.resource(fd, Set(FDEvent.Readable, FDEvent.Disconnect)).use: poll =>
 ```
 
 Backed by `uv_poll_t` - one-shot readiness on a foreign file descriptor.
+
+### FS
+
+```scala
+import boilerplate.effect.EffIO
+import cats.effect.IO
+import emile.*
+
+// Watch a directory rather than a single file (see the caveat below).
+FS.watch(java.nio.file.Path.of("/etc/myapp")).use: watcher =>
+  watcher.events.evalMap(event => EffIO.liftF(IO.println(s"changed: $event"))).compile.drain
+```
+
+Backed by `uv_fs_event_t` (inotify on Linux). `watcher.events` is an `EmStream[EmileError.IO, FSEvent]` running until
+the resource releases; each `FSEvent` carries the `Set[FSChange]` observed (`Renamed`, `Changed`) and, when the
+platform supplies it, the affected entry's `filename`. A libuv watch error ends the stream on its typed channel.
+
+Prefer watching a **directory** over a single file: replacing a watched file by rename detaches the underlying watch,
+after which it stops reporting, whereas a directory keeps reporting its entries' changes. The platform coalesces rapid
+changes and may report a change with no entry name, so any debouncing is the consumer's concern.
 
 ### OpenFile
 
