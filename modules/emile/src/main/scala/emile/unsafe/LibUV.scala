@@ -55,10 +55,13 @@ private[emile] object LibUV:
   type GetNameInfoCB = CFuncPtr4[Ptr[Byte], CInt, CString, CString, Unit]
   type SignalCB = CFuncPtr2[Ptr[Byte], CInt, Unit]
   type FSEventCB = CFuncPtr4[Ptr[Byte], CString, CInt, CInt, Unit]
+  // The prev / curr uv_stat_t pointers are unused: only the status discriminates appeared/changed.
+  type FSPollCB = CFuncPtr4[Ptr[Byte], CInt, Ptr[Byte], Ptr[Byte], Unit]
 
   // uv_handle_type ordinals (for uv_handle_size).
   inline val UV_ASYNC = 1
   inline val UV_FS_EVENT = 3
+  inline val UV_FS_POLL = 4
   inline val UV_NAMED_PIPE = 7
   inline val UV_POLL = 8
   inline val UV_TCP = 12
@@ -196,6 +199,11 @@ private[unsafe] object LibUVExtern:
   // separate stop binding is needed.
   def uv_fs_event_init(loop: Ptr[Byte], handle: Ptr[Byte]): CInt = extern
   def uv_fs_event_start(handle: Ptr[Byte], cb: LibUV.FSEventCB, path: CString, flags: CUnsignedInt): CInt = extern
+
+  // uv_fs_poll_t: a stat-polling path watcher for backends inotify cannot serve (NFS, some containers).
+  // uv_close runs uv__fs_poll_close, which stops and frees it, so no separate stop binding is needed.
+  def uv_fs_poll_init(loop: Ptr[Byte], handle: Ptr[Byte]): CInt = extern
+  def uv_fs_poll_start(handle: Ptr[Byte], cb: LibUV.FSPollCB, path: CString, interval: CUnsignedInt): CInt = extern
 
   def uv_getaddrinfo(
     loop: Ptr[Byte],

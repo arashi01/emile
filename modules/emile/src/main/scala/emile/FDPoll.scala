@@ -23,24 +23,32 @@ import scala.scalanative.unsigned.*
 import boilerplate.effect.EffIO
 import cats.effect.IO
 import cats.effect.Resource
+import fs2.Stream
 
 import emile.unsafe.CallbackBridge
 import emile.unsafe.LibUV
 import emile.unsafe.LibUVPoller
+import emile.unsafe.LiveHandle
 import emile.unsafe.Routing
 
 /** A readiness condition on a polled file descriptor. */
 enum FDEvent derives CanEqual:
   case Readable, Writable, Disconnect, Prioritized
 
-final private class FDPollState(val handle: Ptr[Byte], val poller: LibUVPoller, val eventMask: Int)
+final private class FDPollState(val live: LiveHandle, val eventMask: Int):
+  // Single-waiter guard: a concurrent await/awaits would overwrite this one's continuation in the
+  // handle slot. Owner-confined - set/cleared only inside Routing.onOwner and the poll callback,
+  // both on the loop thread - so a plain var with no barrier, as the socket transfer flags are.
+  var waiting: Boolean = false // scalafix:ok DisableSyntax.var
 
 /** A file-descriptor readiness watcher, backed by a libuv `uv_poll_t`. Acquired through
-  * [[FDPoll$ FDPoll]].
+  * [[FDPoll$ FDPoll]]. Readiness is a single shared condition, so a watcher serves one waiter: a
+  * concurrent `await` / `awaits` on the same [[FDPoll]] fails fast with
+  * [[EmileError.IO.ConflictingOperation]]. Consume from one fibre.
   */
 opaque type FDPoll = FDPollState
 
-/** Resource, the one-shot await, and equality for [[FDPoll]]. */
+/** Resource, the one-shot and persistent readiness operations, and equality for [[FDPoll]]. */
 object FDPoll:
 
   /** A scoped `uv_poll_t` watching `fd` for `events`. The handle is created on - and closed back on -
@@ -55,10 +63,23 @@ object FDPoll:
   extension (poll: FDPoll)
     /** Completes with the readiness conditions for which the descriptor next becomes ready.
       * One-shot: polling is armed for this call and stopped when the events arrive or the effect is
-      * cancelled.
+      * cancelled. Using the watcher after its resource has released is a typed
+      * [[EmileError.IO.AlreadyClosed]].
       */
     def await: EmIO[EmileError.IO, Set[FDEvent]] =
       EffIO.attempt(startPoll(poll), EmileError.IO.Unexpected(_))
+
+    /** A readiness stream holding the one handle across deliveries, rather than re-acquiring per
+      * readiness - for an external descriptor watched repeatedly. The watch is disarmed between
+      * elements and re-armed on the next pull, so a slow consumer cannot busy-loop the
+      * level-triggered poll, while re-arming still catches a descriptor that is already ready. A
+      * poll error ends the stream on the [[EmileError.IO]] channel.
+      */
+    def awaits: EmStream[EmileError.IO, Set[FDEvent]] =
+      Stream.repeatEval[EmIO.Of[EmileError.IO], Set[FDEvent]](poll.await)
+  end extension
+
+  private def poller(poll: FDPoll): LibUVPoller = LiveHandle.poller(poll.live)
 
   private def acquire(fd: Int, events: Set[FDEvent]): EmIO[EmileError.IO, FDPoll] =
     EffIO.lift:
@@ -69,7 +90,7 @@ object FDPoll:
       yield result
 
   private def release(poll: FDPoll): EmIO[EmileError.IO, Unit] =
-    EffIO.liftF(Routing.closeHandle(poll.poller, poll.handle))
+    EffIO.liftF(LiveHandle.closeOnOwner(poll.live))
 
   private def install(
     poller: LibUVPoller,
@@ -81,26 +102,41 @@ object FDPoll:
     if rc != 0 then
       stdlib.free(handle)
       Left(IOMapping.fromCode(rc))
-    else Right(new FDPollState(handle, poller, eventMask(events)))
+    else Right(new FDPollState(LiveHandle(poller, handle), eventMask(events)))
 
   private def startPoll(poll: FDPoll): IO[Set[FDEvent]] =
     IO.async[Set[FDEvent]]: cb =>
-      Routing.onOwner(poll.poller):
-        CallbackBridge.store(poll.poller, poll.handle, new PollHolder(poll.poller, cb))
-        val rc = LibUV.uv_poll_start(poll.handle, poll.eventMask, pollCb)
-        if rc < 0 then
-          CallbackBridge.clear(poll.poller, poll.handle)
-          cb(Left(IOMapping.fromCode(rc)))
-          None
-        else Some(Routing.onOwner(poll.poller)(stopPoll(poll.poller, poll.handle)))
+      Routing.onOwner(poller(poll)):
+        LiveHandle.tryUse(poll.live, closedAsync(cb)): handle =>
+          if poll.waiting then
+            // A wait is already in flight on this watcher; a second would strand the first's callback.
+            cb(Left(EmileError.IO.ConflictingOperation))
+            None
+          else
+            poll.waiting = true
+            CallbackBridge.store(poller(poll), handle, new PollHolder(poll, cb))
+            val rc = LibUV.uv_poll_start(handle, poll.eventMask, pollCb)
+            if rc < 0 then
+              stopPoll(poll, handle)
+              cb(Left(IOMapping.fromCode(rc)))
+              None
+            else Some(Routing.onOwner(poller(poll))(LiveHandle.tryUse(poll.live, ())(handle => stopPoll(poll, handle))))
+
+  // tryUse closed branch for the IO.async: fail the callback and register no finaliser. By-name in
+  // tryUse, so it fires only when the handle is already closed.
+  private def closedAsync(cb: Either[Throwable, Set[FDEvent]] => Unit): Option[IO[Unit]] =
+    cb(Left(EmileError.IO.AlreadyClosed))
+    None
 
   // Both the one-shot trampoline and the cancellation finaliser run this; uv_poll_stop is idempotent.
-  private def stopPoll(poller: LibUVPoller, handle: Ptr[Byte]): Unit =
+  // Clears the single-waiter flag so the next await may arm, and releases the handle's anchor.
+  private def stopPoll(state: FDPollState, handle: Ptr[Byte]): Unit =
     LibUV.uv_poll_stop(handle): Unit
-    CallbackBridge.clear(poller, handle)
+    state.waiting = false
+    CallbackBridge.clear(LiveHandle.poller(state.live), handle)
 
-  // Carries the poller so the trampoline's stopPoll can clear the handle's anchor.
-  final private class PollHolder(val poller: LibUVPoller, val cb: Either[Throwable, Set[FDEvent]] => Unit)
+  // Carries the state so the trampoline's stopPoll can clear the anchor and the single-waiter flag.
+  final private class PollHolder(val state: FDPollState, val cb: Either[Throwable, Set[FDEvent]] => Unit)
 
   private def eventBit(event: FDEvent): Int = event match
     case FDEvent.Readable => LibUV.UV_READABLE
@@ -122,10 +158,11 @@ object FDPoll:
     else handle
   // scalafix:on DisableSyntax
 
-  // uv_poll_cb: deliver the first readiness event, then stop the one-shot poll.
+  // uv_poll_cb: deliver the readiness event off the live handle libuv passed, then stop the one-shot
+  // poll. Stopping before completing the callback leaves the watch disarmed between deliveries.
   private val pollCb: LibUV.PollCB = (handle: Ptr[Byte], status: CInt, events: CInt) =>
     val holder = CallbackBridge.load[PollHolder](handle)
-    stopPoll(holder.poller, handle)
+    stopPoll(holder.state, handle)
     if status < 0 then holder.cb(Left(IOMapping.fromCode(status)))
     else holder.cb(Right(decodeEvents(events)))
 

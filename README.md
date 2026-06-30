@@ -17,8 +17,8 @@ object EchoServer extends EmileIOApp.Simple:
 ```
 
 Émile is the Scala Native event-loop integration cats-effect always wanted: one libuv `uv_loop_t` per work-stealing
-worker, plugged into cats-effect's `PollingSystem` hook. Every TCP, IPC, DNS, timer, signal, file, and fd-poll
-operation runs on the loop thread that owns its handle - the worker the resource was acquired on - with no
+worker, plugged into cats-effect's `PollingSystem` hook. Every TCP, IPC, DNS, timer, signal, file, filesystem-watch,
+and fd-poll operation runs on the loop thread that owns its handle - the worker the resource was acquired on - with no
 `Future`/`Promise` indirection and no separate executor.
 
 It is **Native-first**: the public API is shaped for the Scala Native representation; the typed-error channel is
@@ -28,7 +28,7 @@ It is **Native-first**: the public API is shaped for the Scala Native representa
 
 | Module      | Artifact                        | Purpose                                                                                                            |
 |-------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------|
-| `emile`     | `io.github.arashi01::emile`     | Core library: bootstrap, TCP, IPC (Unix-domain sockets), DNS, timers, signals, files, fd-polling.                  |
+| `emile`     | `io.github.arashi01::emile`     | Core library: bootstrap, TCP, IPC (Unix-domain sockets), DNS, timers, signals, files, filesystem watching, fd-polling. |
 | `emile-fs2` | `io.github.arashi01::emile-fs2` | fs2-networking interop: `TCPSocket.asFs2` / `TCPServer.acceptFs2` adapters onto `fs2.io.net.Socket[IO]`. Optional. |
 
 ```scala
@@ -93,14 +93,20 @@ A connected socket offers five read methods across two axes - one-shot vs persis
 | `reads`    | persistent | owned `Chunk` (stream) | TLS handshakes, websockets, line protocols |
 | `consume`  | persistent | zero-copy view | nghttp2-style synchronous chunk consumers |
 
+The read modes share one per-socket buffer, so a socket has a single reader: starting a read while another is in
+flight fails fast with `EmileError.IO.ConflictingOperation`. Reading and writing concurrently is fine - they are
+independent directions.
+
 Writes mirror the reads: `write(chunk: Chunk[Byte])`, `writes: Pipe[..., Byte, Nothing]`, `writePtr(buf, len)` for an
 already-native buffer, `tryWritePtr(buf, len)` for a synchronous best-effort write, and `sendFile(file: OpenFile,
 offset, length)` for a kernel-to-socket transfer (see [OpenFile](#openfile)). Half-closes are `endOfInput` (send-only)
-and `endOfOutput` (`uv_shutdown`-backed receive-only).
+and `endOfOutput` (`uv_shutdown`-backed receive-only). Concurrent writes from different fibres are safe but their
+relative order is unspecified; use a single writer where order matters.
 
 `socket.onLoop[A](thunk: => A)` submits a synchronous step to the socket's owning loop thread - the public face of
 emile's worker-affinity routing, useful for thread-confining a piece of C state (e.g. an nghttp2 `nghttp2_session`)
-alongside its read trampoline.
+alongside its read trampoline. Keep `thunk` short and non-blocking: it runs on the loop thread and stalls all I/O on
+that worker until it returns.
 
 ### IPC (Unix-domain sockets)
 
@@ -181,10 +187,17 @@ which also carry the typed `EmileError.DNS` channel.
 
 ```scala
 FDPoll.resource(fd, Set(FDEvent.Readable, FDEvent.Disconnect)).use: poll =>
-  poll.await.flatMap(events => ???)
+  poll.await                 // EmIO[EmileError.IO, Set[FDEvent]] - the next readiness, once
+  poll.awaits.compile.drain  // EmStream[EmileError.IO, Set[FDEvent]] - readiness, re-armed per element
 ```
 
-Backed by `uv_poll_t` - one-shot readiness on a foreign file descriptor.
+Backed by `uv_poll_t` - readiness on a foreign file descriptor that emile does not own (the descriptor must stay
+open for the resource's lifetime). `await` is one-shot; `awaits` holds the same handle across deliveries, for a
+descriptor watched repeatedly without re-acquiring. `uv_poll` is level-triggered, so `awaits` disarms between
+elements and re-arms on the next pull - a slow consumer cannot busy-loop the poll, and re-arming still catches a
+descriptor that is already ready. Readiness is a single shared condition, so a watcher serves one waiter: do not run
+`await` / `awaits` concurrently on one watcher. Using the watcher after its resource has released is a typed
+`EmileError.IO.AlreadyClosed`.
 
 ### FS
 
@@ -193,18 +206,31 @@ import boilerplate.effect.EffIO
 import cats.effect.IO
 import emile.*
 
-// Watch a directory rather than a single file (see the caveat below).
+// Reload-on-change: re-read the path on each coalesced pulse (watch a directory, see the caveat below).
 FS.watch(java.nio.file.Path.of("/etc/myapp")).use: watcher =>
-  watcher.events.evalMap(event => EffIO.liftF(IO.println(s"changed: $event"))).compile.drain
+  watcher.changes.evalMap(_ => EffIO.liftF(IO.println("config changed - reloading"))).compile.drain
 ```
 
-Backed by `uv_fs_event_t` (inotify on Linux). `watcher.events` is an `EmStream[EmileError.IO, FSEvent]` running until
-the resource releases; each `FSEvent` carries the `Set[FSChange]` observed (`Renamed`, `Changed`) and, when the
-platform supplies it, the affected entry's `filename`. A libuv watch error ends the stream on its typed channel.
+`FS.watch` uses inotify (`uv_fs_event_t`); `FS.poll(path, interval)` stat-polls instead, for paths inotify cannot serve
+(network filesystems, some container mounts). Both expose the changes two ways, each drained by a single subscriber (a
+second concurrent consumer fails fast with `EmileError.IO.ConflictingOperation`):
 
-Prefer watching a **directory** over a single file: replacing a watched file by rename detaches the underlying watch,
-after which it stops reporting, whereas a directory keeps reporting its entries' changes. The platform coalesces rapid
-changes and may report a change with no entry name, so any debouncing is the consumer's concern.
+| Stream    | Element   | Use |
+|-----------|-----------|-----|
+| `events`  | `FSEvent` | every change, in order - the lossless detail view |
+| `changes` | `Unit`    | one coalesced pulse per burst - the re-scan trigger for high churn |
+
+Each `FSEvent` carries the `Set[FSChange]` observed - `Renamed` (an entry created, deleted, moved, or renamed) and/or
+`Changed` (an entry's contents or attributes) - and, when the platform supplies one, the affected entry's `filename`.
+A libuv watch error ends either stream on its typed `EmileError.IO` channel.
+
+Filesystem watching is inherently lossy - the kernel can drop events on overflow, and an inotify watch detaches when
+its file is replaced by rename - so prefer watching a **directory** over a single file, and use `changes` + a re-scan
+where you must not miss a change (a re-scan reads current state regardless of how many notifications coalesced).
+`events` is lossless only while the consumer keeps up; for sustained high churn use `changes`, which keeps at most one
+pulse outstanding. The platform also coalesces rapid changes and may omit the entry name, so any further debouncing is
+the consumer's concern. `FS.poll` is coarser still: it reports only the watched path's own stat transitions (no entry
+name), so polling a directory misses changes within its files.
 
 ### OpenFile
 
@@ -226,7 +252,7 @@ socket.sendFile(file, 0L, size)    // single uv_fs_sendfile syscall, zero-copy, 
 `sendFile` is a single `uv_fs_sendfile` syscall: it returns the bytes actually sent, which may be fewer than `length`
 (0 when the socket send buffer is full). It writes the raw descriptor outside libuv's write queue, so it must not
 overlap an in-flight `write` or an `endOfOutput` half-close on the same socket - a concurrent one fails fast with
-`EmileError.IO.ConflictingTransfer`. For a complete, backpressured body, prefer `file.reads.through(socket.writes)`.
+`EmileError.IO.ConflictingOperation`. For a complete, backpressured body, prefer `file.reads.through(socket.writes)`.
 
 ## Typed errors as values
 

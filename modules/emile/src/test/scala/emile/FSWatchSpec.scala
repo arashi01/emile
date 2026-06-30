@@ -24,8 +24,9 @@ import boilerplate.effect.EffIO
 import cats.effect.IO
 import cats.effect.Resource
 
-/** Covers [[FS]]: a real change to a watched path surfaces on the event stream, and a watch of a
-  * missing path fails with a typed error.
+/** Covers [[FS]]: a real change to a watched path surfaces on `events` and as a coalesced `changes`
+  * pulse, [[FS$ FS]].poll detects a change by stat-polling, a watch of a missing path fails with a
+  * typed error, and a second concurrent consumer fails with [[EmileError.IO.ConflictingOperation]].
   */
 final class FSWatchSpec extends EmileSuite:
 
@@ -50,6 +51,59 @@ final class FSWatchSpec extends EmileSuite:
       case Left(_: EmileError.IO) => ()
       case other => fail(s"expected EmileError.IO, got: $other")
     }
+  }
+
+  test("changes reports a coalesced pulse on a file change") {
+    tempFile("emile FS changes probe".getBytes("UTF-8")).use: file =>
+      FS.watch(file.toPath)
+        .use(fs =>
+          EffIO.liftF(
+            for
+              _ <- IO.blocking(append(file, " changed".getBytes("UTF-8")))
+              pulses <- fs.changes.take(1).compile.toList.absolve.timeout(10.seconds)
+              _ <- IO(assertEquals(pulses, List(())))
+            yield ()
+          )
+        )
+        .absolve
+  }
+
+  test("poll detects a change to the watched file by stat-polling") {
+    tempFile("emile FS poll probe".getBytes("UTF-8")).use: file =>
+      FS.poll(file.toPath, 200.millis)
+        .use(fs =>
+          EffIO.liftF(
+            for
+              // let the first poll record the baseline stat, then change the file's size
+              _ <- IO.sleep(500.millis)
+              _ <- IO.blocking(append(file, " changed".getBytes("UTF-8")))
+              events <- fs.events.take(1).compile.toList.absolve.timeout(15.seconds)
+              _ <- IO(assert(events.exists(_.changes.contains(FSChange.Changed)), s"expected a Changed event, got: $events"))
+            yield ()
+          )
+        )
+        .absolve
+  }
+
+  test("a second concurrent events consumer fails fast with ConflictingOperation") {
+    tempFile("emile FS guard probe".getBytes("UTF-8")).use: file =>
+      FS.watch(file.toPath)
+        .use(fs =>
+          EffIO.liftF(
+            for
+              // the first consumer holds the single-consumer slot; with no change it blocks on take
+              consuming <- fs.events.compile.drain.absolve.start
+              _ <- IO.sleep(200.millis)
+              result <- fs.events.take(1).compile.toList.either
+              _ <- consuming.cancel
+              _ <- IO(result match
+                     case Left(EmileError.IO.ConflictingOperation) => ()
+                     case other => fail(s"expected ConflictingOperation, got: $other"))
+            yield ()
+          )
+        )
+        .absolve
+        .timeout(10.seconds)
   }
 
   private def tempFile(content: Array[Byte]): Resource[IO, File] =
