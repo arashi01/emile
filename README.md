@@ -165,9 +165,11 @@ There is no `AlreadyWatched` failure mode and no race on the install.
 
 ### AsyncSignal
 
-`AsyncSignal.resource` allocates a `uv_async_t`; `signal.fire` is libuv's documented cross-thread wake (no routing, no
-copy), `signal.fires` is a coalesced wake-up stream. libuv may coalesce many `fire`s into one delivery - it is an
-edge-triggered wake-up, not a counter.
+`AsyncSignal.resource` gives a cross-fibre / cross-thread wake-up - a cats-effect-backed convenience (typed errors, a
+`Resource` lifecycle, coalescing), not a libuv handle. `signal.fire`, from any fibre or thread, surfaces on the
+`signal.fires` stream. A capacity-one circular buffer coalesces: rapid fires collapse to a single pending wake-up - an
+edge-triggered signal, not a counter. `fires` is drained by a single subscriber; a second concurrent consumer fails
+fast with `EmileError.IO.ConflictingOperation`.
 
 ### DNS
 
