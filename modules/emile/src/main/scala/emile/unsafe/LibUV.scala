@@ -17,9 +17,9 @@ package emile.unsafe
 
 import scala.scalanative.unsafe.*
 
-/** emile's libuv FFI surface (libuv 1.52.1): constants, callback-pointer aliases, and - re-exported
-  * from [[LibUVExtern]] - the `@extern` bindings, all reached as `LibUV.*`. The split exists
-  * because a Scala Native `@extern` object admits only `extern` declarations. Linkage is
+/** emile's libuv FFI surface (libuv >= 1.51): constants, callback-pointer aliases, and -
+  * re-exported from [[LibUVExtern]] - the `@extern` bindings, all reached as `LibUV.*`. The split
+  * exists because a Scala Native `@extern` object admits only `extern` declarations. Linkage is
   * build-wired; no `@link`.
   */
 private[emile] object LibUV:
@@ -161,16 +161,15 @@ private[unsafe] object LibUVExtern:
   def uv_tcp_bind(handle: Ptr[Byte], addr: Ptr[Byte], flags: CUnsignedInt): CInt = extern
   def uv_tcp_connect(req: Ptr[Byte], handle: Ptr[Byte], addr: Ptr[Byte], connectCb: LibUV.ConnectCB): CInt = extern
   def uv_tcp_nodelay(handle: Ptr[Byte], enable: CInt): CInt = extern
-  def uv_tcp_keepalive_ex(
-    handle: Ptr[Byte],
-    on: CInt,
-    idle: CUnsignedInt,
-    intvl: CUnsignedInt,
-    cnt: CUnsignedInt
-  ): CInt = extern
+  // Sets SO_KEEPALIVE and TCP_KEEPIDLE (from `delay`, in seconds); the probe interval and count are
+  // set separately by setsockopt so the floor stays at libuv 1.51 (uv_tcp_keepalive_ex is 1.52).
+  def uv_tcp_keepalive(handle: Ptr[Byte], enable: CInt, delay: CUnsignedInt): CInt = extern
   def uv_tcp_simultaneous_accepts(handle: Ptr[Byte], enable: CInt): CInt = extern
   def uv_tcp_getsockname(handle: Ptr[Byte], name: Ptr[Byte], nameLen: Ptr[CInt]): CInt = extern
   def uv_tcp_getpeername(handle: Ptr[Byte], name: Ptr[Byte], nameLen: Ptr[CInt]): CInt = extern
+  // Abortive close: sends a TCP RST (via SO_LINGER 0) and uv_close's the handle, so the close callback
+  // still frees it. Returns < 0 without closing if a uv_shutdown is pending (mixing is disallowed).
+  def uv_tcp_close_reset(handle: Ptr[Byte], closeCb: LibUV.CloseCB): CInt = extern
 
   // uv_pipe_t (a uv_stream_t): Unix-domain sockets on Unix, named pipes on Windows.
   def uv_pipe_init(loop: Ptr[Byte], handle: Ptr[Byte], ipc: CInt): CInt = extern

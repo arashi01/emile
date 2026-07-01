@@ -110,13 +110,14 @@ def commonSettings: Seq[Setting[?]] = Seq(
 )
 
 def nativeSettings: Seq[Setting[?]] = Seq(
-  // travels in the published NIR descriptor so a downstream consumer links libuv with no restatement.
+  // links the test binary against system libuv (>= 1.51), and travels in the published NIR descriptor
+  // so a downstream consumer links it too with no restatement.
   SNX.libraries := { case Linux(_, _) => Seq(NativeLibrary("uv")) },
-  SNX.libraries ++= (if useSystemLibUV.value then Seq.empty else Seq(Dependencies.vendoredLibUV % Test)),
   // emile drives a multithreaded cats-effect runtime: force multithreading on the test link and require it of consumers.
   SNX.flags := { case Linux(_, _) => Flags.multithreaded },
   // -no-pie defensively for us until the non-PIC relocation source issue is resolved.
   SNX.modifiers += Modifier.platform { case Linux(_, _) => _.linkOptions("-no-pie") },
+  // A fully-static musl test binary when EMILE_STATIC_LINK is set - links the toolchain's static libuv archive.
   Test / SNX.modifiers += Modifier.platform { case Linux(_, Musl) if staticTestLink.value => _.linkOptions("-static") }
 )
 

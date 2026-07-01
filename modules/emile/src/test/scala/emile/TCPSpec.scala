@@ -78,6 +78,17 @@ final class TCPSpec extends EmileSuite:
       .timeout(5.seconds)
   }
 
+  test("write(chunks) delivers every buffer in order as one ordered write") {
+    val parts: List[Chunk[Byte]] =
+      List("vectored-", "emile-", "payload").map(part => Chunk.array(part.getBytes("UTF-8")))
+    TCP
+      .bind(anyLoopback)
+      .widen[EmileError]
+      .use(server => EffIO.liftF(vectoredEcho(server, parts)))
+      .absolve
+      .timeout(5.seconds)
+  }
+
   test("connect to a closed port fails on the Connect channel") {
     val closedAddress: IO[SocketAddress[IpAddress]] =
       TCP.bind(anyLoopback).use(server => EffIO.suspend(server.address)).absolve
@@ -152,6 +163,34 @@ final class TCPSpec extends EmileSuite:
 
     srvWork.background.use(_ => cliWork)
   end streamingEcho
+
+  private def vectoredEcho(server: TCPServer, parts: List[Chunk[Byte]]): IO[Unit] =
+    val expected: Chunk[Byte] = parts.foldLeft(Chunk.empty[Byte])(_ ++ _)
+    val srvWork: IO[Unit] =
+      server.accepted
+        .evalMap(_.use(socket => socket.readN(expected.size).flatMap(chunk => socket.write(chunk))))
+        .head
+        .compile
+        .drain
+        .absolve
+
+    val cliWork: IO[Unit] =
+      TCP
+        .connect(server.address)
+        .widen[EmileError]
+        .use(socket =>
+          EffIO.liftF(
+            for
+              _ <- socket.write(parts).absolve
+              echo <- socket.readN(expected.size).absolve
+              _ <- IO(assertEquals(echo.toList, expected.toList))
+            yield ()
+          )
+        )
+        .absolve
+
+    srvWork.background.use(_ => cliWork)
+  end vectoredEcho
 
   private def stressEcho(server: TCPServer, payload: Chunk[Byte], iterations: Int): IO[Unit] =
     val srvWork: IO[Unit] =

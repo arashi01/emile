@@ -75,8 +75,13 @@ private[emile] object LiveHandle:
       case false => IO.unit
     }
 
-  // Returns true only for the call that performs the transition, so exactly one closeOnOwner frees.
-  private def markClosed(live: LiveHandle): Boolean =
+  /** Mark the handle closed on the owner thread, returning true only for the call that performs the
+    * transition. For a handle whose close is driven directly (an abortive `uv_tcp_close_reset`
+    * rather than [[closeOnOwner]]'s `uv_close`), so the socket's own release then finds it closed
+    * and does not close a second time. Call on the owner thread, and only once the close is
+    * committed.
+    */
+  private[emile] def markClosed(live: LiveHandle): Boolean =
     if live.closed then false
     else
       live.closed = true

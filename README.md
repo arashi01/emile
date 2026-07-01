@@ -97,11 +97,13 @@ The read modes share one per-socket buffer, so a socket has a single reader: sta
 flight fails fast with `EmileError.IO.ConflictingOperation`. Reading and writing concurrently is fine - they are
 independent directions.
 
-Writes mirror the reads: `write(chunk: Chunk[Byte])`, `writes: Pipe[..., Byte, Nothing]`, `writePtr(buf, len)` for an
-already-native buffer, `tryWritePtr(buf, len)` for a synchronous best-effort write, and `sendFile(file: OpenFile,
-offset, length)` for a kernel-to-socket transfer (see [OpenFile](#openfile)). Half-closes are `endOfInput` (send-only)
-and `endOfOutput` (`uv_shutdown`-backed receive-only). Concurrent writes from different fibres are safe but their
-relative order is unspecified; use a single writer where order matters.
+Writes mirror the reads: `write(chunk: Chunk[Byte])`, `write(chunks: Seq[Chunk[Byte]])` for one ordered gathering
+write, `writes: Pipe[..., Byte, Nothing]`, `writePtr(buf, len)` for an already-native buffer, `tryWritePtr(buf, len)`
+for a synchronous best-effort write, and `sendFile(file: OpenFile, offset, length)` for a kernel-to-socket transfer
+(see [OpenFile](#openfile)). Half-closes are `endOfInput` (send-only) and `endOfOutput` (`uv_shutdown`-backed
+receive-only); `closeReset` (TCP only) aborts the connection with a RST rather than a graceful FIN, discarding any
+queued output. Concurrent writes from different fibres are safe but their relative order is unspecified; batch them
+into one `write(chunks)` or use a single writer where order matters.
 
 `socket.onLoop[A](thunk: => A)` submits a synchronous step to the socket's owning loop thread - the public face of
 emile's worker-affinity routing, useful for thread-confining a piece of C state (e.g. an nghttp2 `nghttp2_session`)
@@ -335,15 +337,15 @@ nativeConfig := nativeConfig.value.withLinkingOptions(
 ```
 
 For a fully-static binary, add `-static` alongside `-luv` and ensure your build environment provides a static libuv
-archive (Alpine edge's `libuv-static` package does).
+archive (Alpine's `libuv-static` package provides one).
 
 For building emile itself from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### libuv version
 
-emile binds `uv_tcp_keepalive_ex`'s three-field form, which landed in **libuv 1.52.0** - your target machine needs
-libuv >= 1.52.0 at runtime (dynamic) or build time (static). Distros currently shipping a recent enough libuv: **Fedora
-rawhide**, **Alpine edge**. RHEL 10, Ubuntu 26.04, and Alpine 3.23.x still ship libuv 1.51.x.
+emile needs **libuv >= 1.51** at runtime (dynamic) or build time (static) - the version RHEL 10, Ubuntu 26.04, and
+Alpine 3.23 ship, along with Fedora and Alpine edge. Install the runtime package to run, or the `-dev` / `-devel`
+package to link (`apt install libuv1-dev`, `dnf install libuv-devel`, `apk add libuv-dev`).
 
 ## Caveats
 
@@ -360,7 +362,7 @@ affected - prefer dynamic linking on musl today. glibc targets are unaffected.
 |--------------|---------------------------------|
 | Scala        | **3.8.x**                       |
 | Scala Native | **0.5.12+**                     |
-| libuv        | **>= 1.52.0**                   |
+| libuv        | **>= 1.51**                     |
 | Platform     | Linux (glibc or musl)           |
 
 ## Licence

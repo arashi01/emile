@@ -29,55 +29,55 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # glibc on Oracle Linux 10 - the RHEL 10 libuv 1.51.x floor.
           - link: Dynamic
             family: linux
             arch: x86_64
             runtime: "-glibc"
             runner: ubuntu-24.04
-            dockerImage: shuwariafrica/rawhide-jdk:17
+            dockerImage: shuwariafrica/el10-jdk:17
           - link: Dynamic
             family: linux
             arch: aarch64
             runtime: "-glibc"
             runner: ubuntu-24.04-arm
-            dockerImage: shuwariafrica/rawhide-jdk:17
-          # musl cells fail until scala-native PR #4934 (sigaltstack/SIGSTKSZ
-          # fix for musl) merges and a SN release ships. Remove `continueOnError`
-          # on all four musl entries then.
+            dockerImage: shuwariafrica/el10-jdk:17
+          # musl on Alpine 3.23 (release track, libuv 1.51.x, ships libuv-static for the static link).
+          # These fail until scala-native PR #4934 (sigaltstack/SIGSTKSZ fix for musl) merges and a SN
+          # release ships - remove `continueOnError` on all four musl entries then.
           - link: Dynamic
             family: linux
             arch: x86_64
             runtime: "-musl"
             runner: ubuntu-24.04
-            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            dockerImage: shuwariafrica/alpine-jdk:17
             continueOnError: true
           - link: Dynamic
             family: linux
             arch: aarch64
             runtime: "-musl"
             runner: ubuntu-24.04-arm
-            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            dockerImage: shuwariafrica/alpine-jdk:17
             continueOnError: true
           - link: Static
             family: linux
             arch: x86_64
             runtime: "-musl"
             runner: ubuntu-24.04
-            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            dockerImage: shuwariafrica/alpine-jdk:17
             continueOnError: true
           - link: Static
             family: linux
             arch: aarch64
             runtime: "-musl"
             runner: ubuntu-24.04-arm
-            dockerImage: shuwariafrica/alpine-edge-jdk:17
+            dockerImage: shuwariafrica/alpine-jdk:17
             continueOnError: true
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.continueOnError == true }}
     timeout-minutes: 45
     env:
       DOCKER_IMAGE: ${{ matrix.dockerImage }}
-      EMILE_SYSTEM_LIBUV: "true"
       EMILE_STATIC_LINK: ${{ matrix.link == 'Static' && 'true' || 'false' }}
     steps:
       - name: Checkout
@@ -104,33 +104,6 @@ jobs:
             echo "$file_out" | grep -q 'statically linked'
             echo "$ldd_out" | grep -q 'not a dynamic executable'
           done
-
-  link_vendored:
-    name: "[${{ matrix.family }}-${{ matrix.arch }}${{ matrix.runtime }}] Execute Linker (Vendored)"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - family: linux
-            arch: x86_64
-            runtime: "-glibc"
-            runner: ubuntu-24.04
-          - family: linux
-            arch: aarch64
-            runtime: "-glibc"
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    container: shuwariafrica/el10-jdk:17
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Set up Coursier cache
-        uses: coursier/cache-action@v8
-      - name: "Build vendored libuv and verify test binary linkage"
-        run: ./project/scripts/run-sbt.sh -batch "emile/Test/snxLink" "emile-fs2/Test/snxLink"
 
   static-analysis:
     name: Static analysis
@@ -173,8 +146,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      DOCKER_IMAGE: shuwariafrica/rawhide-jdk:17
-      EMILE_SYSTEM_LIBUV: "true"
+      DOCKER_IMAGE: shuwariafrica/el10-jdk:17
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -187,7 +159,7 @@ jobs:
 
   publish:
     name: Publish Binaries
-    needs: [test_native, link_vendored, static-analysis, stress]
+    needs: [test_native, static-analysis, stress]
     if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     container: shuwariafrica/el10-jdk:17

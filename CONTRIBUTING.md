@@ -8,57 +8,19 @@ This document covers what you need to build Émile from source, run its tests, a
 - **An sbt launcher** (`sbt` on your `$PATH`). `project/build.properties` pins emile's sbt version; the launcher fetches
   it automatically. No system-wide sbt-2.x install is required.
 - **Native toolchain.** `clang` (16 or newer recommended) and `lld`. Émile is Linux-only.
-- **For the vendored-libuv fallback only**: `cmake` toolchain. Not needed when your host already ships libuv 1.52.0+.
-
-## Build flags
-
-Two keys provided by the `EmileNativeBuild` AutoPlugin control how emile's tests are linked:
-
-| Setting          | Env-var shortcut          | Default | Effect                                                                                                                                  |
-|------------------|---------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------|
-| `useSystemLibUV` | `EMILE_SYSTEM_LIBUV=true` | `false` | `true` links against the host/distro libuv (`-luv`); `false` has sbt-snx clone and cmake-build a pinned libuv, linking the archive.     |
-| `staticTestLink` | `EMILE_STATIC_LINK=true`  | `false` | `true` adds `-static`, producing a fully static test binary **on a musl toolchain (Alpine)**; ignored on glibc, where it stays dynamic. |
-
-The two settings combine to four linkage modes (`-static` is honoured only on musl):
-
-| `useSystemLibUV`  | `staticTestLink`  | Linkage                                                          |
-|-------------------|-------------------|------------------------------------------------------------------|
-| `false` (default) | `false` (default) | Vendored archive, dynamic - the contributor fallback.            |
-| `false`           | `true`            | Vendored archive; `-static` on musl, dynamic on glibc.           |
-| `true`            | `false`           | Distro libuv `-luv`, dynamic - **what Maven Central users get**. |
-| `true`            | `true`            | Distro libuv `-luv`; `-static` (Alpine `libuv-static`) on musl.  |
-
-## The vendored-libuv stopgap
-
-emile binds `uv_tcp_keepalive_ex`'s three-field form, which landed in libuv **1.52.0**. The current distro-libuv
-landscape:
-
-| Distro                                 | Ships libuv | Tested in CI                                               |
-|----------------------------------------|-------------|------------------------------------------------------------|
-| RHEL 10 / Ubuntu 26.04 / Alpine 3.23.x | 1.51.x      | no (too old)                                               |
-| Fedora rawhide                         | >= 1.52.0   | yes (`shuwariafrica/rawhide-jdk:17`)                       |
-| Alpine edge                            | >= 1.52.0   | yes (`shuwariafrica/alpine-edge-jdk:17`, dynamic + static) |
-
-When `useSystemLibUV` is `false` (the default), sbt-snx clones libuv (pinned to **1.52.1**) and cmake-builds a static
-archive, linked into the test binary directly; no system libuv is touched, and no git submodule or manual checkout is
-needed - `cmake` and `clang` are the only extra prerequisites. This is a **stopgap** - until mainstream distros ship
-libuv 1.52+, at which point the vendored build can be dropped in favour of the system libuv.
+- **libuv >= 1.51, with its development package.** emile's `@extern` bindings link against the system libuv, so you
+  need the linkable library (the `-dev` / `-devel` package), not just the runtime: `apt install libuv1-dev`,
+  `dnf install libuv-devel`, or `apk add libuv-dev`. RHEL 10, Ubuntu 26.04, Alpine 3.23, Fedora, and Alpine edge all
+  ship a new-enough libuv.
 
 ## Running tests locally
 
-### On a host with libuv >= 1.52.0 (rawhide, Alpine edge)
-
-```bash
-EMILE_SYSTEM_LIBUV=true sbt "emile/testOnly *" "emile-fs2/testOnly *"
-```
-
-### With the vendored fallback (any host with cmake + clang)
+With libuv's development package installed (see [Prerequisites](#prerequisites)), the tests link against your system
+libuv:
 
 ```bash
 sbt "emile/testOnly *" "emile-fs2/testOnly *"
 ```
-
-(`useSystemLibUV` defaults to `false`, so sbt-snx clones and cmake-builds libuv automatically - no submodule step.)
 
 ### Concurrency stress suite
 
@@ -67,19 +29,25 @@ explicitly. They build their own forced aggressive auto-cede runtime so schedule
 thresholds hide them). CI runs them on every change (the `stress` job); locally:
 
 ```bash
-EMILE_SYSTEM_LIBUV=true sbt "emile-stress/testOnly *"
+sbt "emile-stress/testOnly *"
 ```
 
 ### Reproducing a CI cell verbatim with Docker
 
 ```bash
-DOCKER_IMAGE=shuwariafrica/alpine-edge-jdk:17 \
-  EMILE_SYSTEM_LIBUV=true EMILE_STATIC_LINK=true \
+# glibc (Oracle Linux 10 = the RHEL 10 libuv 1.51 floor):
+DOCKER_IMAGE=shuwariafrica/el10-jdk:17 \
+  ./project/scripts/run-sbt.sh "emile/testOnly *" "emile-fs2/testOnly *"
+
+# musl, fully-static (EMILE_STATIC_LINK adds -static, linking the image's libuv-static archive):
+DOCKER_IMAGE=shuwariafrica/alpine-jdk:17 EMILE_STATIC_LINK=true \
   ./project/scripts/run-sbt.sh "emile/testOnly *" "emile-fs2/testOnly *"
 ```
 
 `project/scripts/run-sbt.sh` is the host-or-Docker sbt entry point. With `DOCKER_IMAGE` set, it runs sbt inside the
-named image and forwards `EMILE_SYSTEM_LIBUV` / `EMILE_STATIC_LINK` into the container.
+named image (which ships libuv): the glibc cells use `shuwariafrica/el10-jdk:17` (libuv 1.51) and the musl cells
+`shuwariafrica/alpine-jdk:17` (Alpine 3.23, ships `libuv-static`). `EMILE_STATIC_LINK=true` is honoured only on musl and
+is best-effort until upstream Scala Native musl support ships (see the [musl caveat](README.md#caveats)).
 
 ## Style and gates
 
@@ -120,9 +88,8 @@ specific reader gains something the name and signature do not already convey. If
 2. Make your change. Add or extend tests where the change is behavioural.
 3. Run `sbt format` to fix what can be fixed and surface lint failures.
 4. Run the tests locally:
-    - host with libuv 1.52+: `EMILE_SYSTEM_LIBUV=true sbt "emile/testOnly *" "emile-fs2/testOnly *"`
-    - vendored fallback otherwise: `sbt "emile/testOnly *" "emile-fs2/testOnly *"`
-    - concurrency or lifetime changes: also `EMILE_SYSTEM_LIBUV=true sbt "emile-stress/testOnly *"`
+    - `sbt "emile/testOnly *" "emile-fs2/testOnly *"`
+    - concurrency or lifetime changes: also `sbt "emile-stress/testOnly *"`
 5. Push and open a PR. Ensure all CI jobs are green.
 
 ## Licence

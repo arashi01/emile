@@ -5,8 +5,7 @@
 # matrix cells (rawhide, alpine-edge) are one reproducible command for CI and
 # for local use:
 #
-#   DOCKER_IMAGE=shuwariafrica/alpine-edge-jdk:17 \
-#     EMILE_SYSTEM_LIBUV=true EMILE_STATIC_LINK=true \
+#   DOCKER_IMAGE=shuwariafrica/alpine-jdk:17 EMILE_STATIC_LINK=true \
 #     ./project/scripts/run-sbt.sh "emile/testOnly *"
 #
 # SBT_PROPS, when set, is split on whitespace and prepended to the sbt argv
@@ -39,7 +38,7 @@ docker_args=(
   -e "COURSIER_CACHE=$HOME/.cache/coursier"
   -e "SBT_LOCAL_CACHE=$HOME/.cache/sbt"
 )
-for env_var in TERM CI SBT_OPTS EMILE_SYSTEM_LIBUV EMILE_STATIC_LINK; do
+for env_var in TERM CI SBT_OPTS EMILE_STATIC_LINK; do
   if [[ -n "${!env_var:-}" ]]; then
     docker_args+=(-e "$env_var")
   fi

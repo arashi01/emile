@@ -109,6 +109,11 @@ object EmileError:
         extends EmileError("A concurrent operation conflicts with one already in flight on this resource", None)
         with IO
 
+    /** An operation argument emile rejected before reaching libuv - for example a keep-alive window
+      * below one second.
+      */
+    final case class InvalidArgument(detail: String) extends EmileError(s"Invalid argument: $detail", None) with IO
+
     final case class System(code: ErrorCode) extends EmileError("", None) with IO:
       override def getMessage: String = ErrorCode.describe(code)
 

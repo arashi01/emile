@@ -81,11 +81,16 @@ private[emile] object Routing:
         LibUV.uv_close(handle, closeHandleCb)
         None
 
-  // Holder for closeHandle's completion: carries the poller (for anchor release) and the continuation.
-  final private[unsafe] class CloseCompletion(val poller: LibUVPoller, val cb: Either[Throwable, Unit] => Unit)
+  /** Completion holder stored in a handle's `data` slot before it is closed - carries the poller
+    * (to release the anchor) and the continuation to fire once the handle is freed. Shared with an
+    * abortive `uv_tcp_close_reset`, which frees through the same [[closeHandleCb]].
+    */
+  final private[emile] class CloseCompletion(val poller: LibUVPoller, val cb: Either[Throwable, Unit] => Unit)
 
-  // uv_close callback for closeHandle: release the anchor, free the handle, then complete the release.
-  private val closeHandleCb: LibUV.CloseCB = (handle: Ptr[Byte]) =>
+  /** The `uv_close` callback that releases the anchor, frees the handle, and completes the stored
+    * [[CloseCompletion]] - shared by [[closeHandle]] and by an abortive `uv_tcp_close_reset`.
+    */
+  private[emile] val closeHandleCb: LibUV.CloseCB = (handle: Ptr[Byte]) =>
     val completion = CallbackBridge.load[CloseCompletion](handle)
     CallbackBridge.clear(completion.poller, handle)
     stdlib.free(handle)

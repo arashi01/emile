@@ -16,9 +16,11 @@
 package emile
 
 import scala.annotation.targetName
+import scala.concurrent.duration.DurationInt
 import scala.scalanative.libc.errno as libcErrno
 import scala.scalanative.libc.stdlib
 import scala.scalanative.posix.errno as posixErrno
+import scala.scalanative.posix.netinet.in
 import scala.scalanative.posix.sys.socket as posixSocket
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
@@ -129,6 +131,8 @@ object Socket:
     socket.readN(numBytes)
   inline def write[K <: SocketKind](socket: Socket[K], chunk: Chunk[Byte]): EmIO[EmileError.IO, Unit] =
     socket.write(chunk)
+  inline def write[K <: SocketKind](socket: Socket[K], chunks: Seq[Chunk[Byte]]): EmIO[EmileError.IO, Unit] =
+    socket.write(chunks)
   inline def readPtr[K <: SocketKind, A](
     socket: Socket[K],
     f: (Ptr[Byte], Int) => EmIO[EmileError.IO, A]
@@ -202,6 +206,14 @@ object Socket:
     inline def write(chunk: Chunk[Byte]): EmIO[EmileError.IO, Unit] =
       writeChunk(socket, chunk)
 
+    /** Write `chunks` as one ordered, atomic `uv_write` - a single syscall gathering every buffer,
+      * so a batch of small frames cannot interleave with a concurrent writer. Empty chunks are
+      * skipped; each backing buffer is held reachable across the in-flight write.
+      */
+    @targetName("ext_writeChunks")
+    inline def write(chunks: Seq[Chunk[Byte]]): EmIO[EmileError.IO, Unit] =
+      writeChunks(socket, chunks)
+
     /** Zero-copy one-shot read: deliver a `(Ptr[Byte], Int)` view of one chunk to `f`. The watcher
       * is stopped before `f` runs, so the buffer is stable until the next read.
       */
@@ -265,6 +277,17 @@ object Socket:
     @targetName("ext_setKeepAlive")
     inline def setKeepAlive(keepAlive: Option[TCPKeepAlive]): EmIO[EmileError.IO, Unit] =
       keepAliveOn(socket, keepAlive)
+
+    /** Abortively close the connection with a TCP RST rather than a graceful FIN, discarding any
+      * queued output - for error paths, reverse proxies, and avoiding TIME_WAIT accumulation. The
+      * socket is closed afterwards, so a later operation is a typed
+      * [[EmileError.IO.AlreadyClosed]]. Fails with [[EmileError.IO.ConflictingOperation]] if a
+      * [[sendFile]] is in flight or the write side is already half-closed with [[endOfOutput]],
+      * neither of which libuv allows a reset to race.
+      */
+    def closeReset: EmIO[EmileError.IO, Unit] =
+      resetConnection(socket)
+  end extension
 
   extension (socket: IPCSocket)
 
@@ -703,6 +726,57 @@ object Socket:
     if status < 0 then state.cb(Left(IOMapping.fromCode(status)))
     else state.cb(Right(()))
 
+  private def writeChunks(socket: StreamSocketState, chunks: Seq[Chunk[Byte]]): EmIO[EmileError.IO, Unit] =
+    EffIO.attempt(
+      IO.async[Unit] { cb =>
+        Routing.onOwner(poller(socket)):
+          val slices = chunks.iterator.filter(_.nonEmpty).map(_.toArraySlice).toVector
+          if slices.isEmpty then
+            cb(Right(()))
+            None
+          else
+            LiveHandle.tryUse(socket.live, closedAsync(cb)): handle =>
+              submitWriteV(socket, handle, slices, cb)
+              None
+      },
+      EmileError.IO.Unexpected(_)
+    )
+
+  private def submitWriteV(
+    socket: StreamSocketState,
+    handle: Ptr[Byte],
+    slices: Vector[Chunk.ArraySlice[Byte]],
+    cb: Either[Throwable, Unit] => Unit
+  ): Unit =
+    if socket.sendFileActive then cb(Left(EmileError.IO.ConflictingOperation))
+    else
+      val nbufs = slices.size
+      val req = allocWriteReq()
+      // libuv copies the bufs array during uv_write, so it need not outlive the call; the backing byte
+      // arrays must, and stay reachable through the WriteState (the whole slice vector) below.
+      val bufs = allocBufs(nbufs)
+      var i = 0
+      while i < nbufs do
+        val slice = slices(i)
+        val buf = bufs + i
+        buf._1 = slice.values.atUnsafe(slice.offset)
+        buf._2 = slice.length.toCSize
+        i += 1
+      CallbackBridge.storeReq(poller(socket), req, new WriteState(socket, poller(socket), cb, slices))
+      val rc = LibUV.uv_write(req, handle, bufs, nbufs.toUInt, writeCb)
+      stdlib.free(bufs)
+      if rc < 0 then
+        CallbackBridge.releaseReq(poller(socket), req)
+        stdlib.free(req)
+        cb(Left(IOMapping.fromCode(rc)))
+      else socket.pendingWrites += 1
+  end submitWriteV
+
+  private def allocBufs(nbufs: Int): Ptr[LibUV.Buf] =
+    val bufs = stdlib.calloc(nbufs.toCSize, sizeof[LibUV.Buf])
+    if bufs == null then throw new OutOfMemoryError("emile: uv_buf_t array allocation failed")
+    else bufs.asInstanceOf[Ptr[LibUV.Buf]]
+
   private def tryWrite(socket: StreamSocketState, buf: Ptr[Byte], len: Int): EmIO[EmileError.IO, Int] =
     EffIO.lift(
       Routing.onOwner(poller(socket)):
@@ -795,22 +869,49 @@ object Socket:
           if rc < 0 then Left(IOMapping.fromCode(rc)) else Right(())
     )
 
+  // scala-native's posix layer binds only TCP_NODELAY; these are Linux's TCP keep-alive option
+  // values (netinet/tcp.h) for the probe interval and count, set by setsockopt below.
+  private inline val TcpKeepIntvl = 5
+  private inline val TcpKeepCnt = 6
+
   private def keepAliveOn(socket: StreamSocketState, keepAlive: Option[TCPKeepAlive]): EmIO[EmileError.IO, Unit] =
     EffIO.lift(
       Routing.onOwner(poller(socket)):
         LiveHandle.tryUse(socket.live, closedIo): handle =>
-          val rc = keepAlive match
-            case None => LibUV.uv_tcp_keepalive_ex(handle, 0, 0.toUInt, 0.toUInt, 0.toUInt)
-            case Some(ka) =>
-              LibUV.uv_tcp_keepalive_ex(
-                handle,
-                1,
-                ka.idle.toSeconds.toInt.toUInt,
-                ka.interval.toSeconds.toInt.toUInt,
-                ka.count.toUInt
-              )
-          if rc < 0 then Left(IOMapping.fromCode(rc)) else Right(())
+          keepAlive match
+            case None => resultOf(LibUV.uv_tcp_keepalive(handle, 0, 0.toUInt))
+            case Some(ka) => enableKeepAlive(handle, ka)
     )
+
+  // uv_tcp_keepalive sets SO_KEEPALIVE and TCP_KEEPIDLE; the probe interval and count are set by the
+  // setsockopt below. A sub-second idle/interval or a zero count is an argument emile rejects itself
+  // (with a typed InvalidArgument), before truncating to seconds - so a sub-second window fails
+  // clearly rather than rounding to zero and reaching libuv as a bare EINVAL.
+  private def enableKeepAlive(handle: Ptr[Byte], ka: TCPKeepAlive): Either[EmileError.IO, Unit] =
+    if ka.idle < 1.second || ka.interval < 1.second || ka.count < 1 then
+      Left(EmileError.IO.InvalidArgument("keep-alive idle and interval must be at least 1 second and count at least 1"))
+    else
+      val rc = LibUV.uv_tcp_keepalive(handle, 1, ka.idle.toSeconds.toInt.toUInt)
+      if rc < 0 then Left(IOMapping.fromCode(rc)) else setKeepAliveProbes(handle, ka)
+
+  private def setKeepAliveProbes(handle: Ptr[Byte], ka: TCPKeepAlive): Either[EmileError.IO, Unit] =
+    val fdCell = stackalloc[CInt]()
+    val fdRc = LibUV.uv_fileno(handle, fdCell)
+    if fdRc < 0 then Left(IOMapping.fromCode(fdRc))
+    else
+      val intvlRc = setKeepAliveOption(!fdCell, TcpKeepIntvl, ka.interval.toSeconds.toInt)
+      if intvlRc < 0 then Left(IOMapping.fromCode(intvlRc))
+      else resultOf(setKeepAliveOption(!fdCell, TcpKeepCnt, ka.count))
+
+  // setsockopt returns 0 or -1 (setting errno); report -errno so IOMapping maps it as a libuv code.
+  private def setKeepAliveOption(fd: Int, option: Int, value: Int): Int =
+    val cell = stackalloc[CInt]()
+    !cell = value
+    val rc = posixSocket.setsockopt(fd, in.IPPROTO_TCP, option, cell.asInstanceOf[CVoidPtr], sizeof[CInt].toUInt)
+    if rc < 0 then -libcErrno.errno else 0
+
+  private def resultOf(rc: Int): Either[EmileError.IO, Unit] =
+    if rc < 0 then Left(IOMapping.fromCode(rc)) else Right(())
 
   private def shutdownWrite(socket: StreamSocketState): IO[Unit] =
     IO.async[Unit]: cb =>
@@ -854,6 +955,38 @@ object Socket:
         if err == posixErrno.ENOTCONN then Right(())
         else Left(IOMapping.fromCode(-err))
       else Right(())
+
+  private def resetConnection(socket: StreamSocketState): EmIO[EmileError.IO, Unit] =
+    EffIO.attempt(
+      IO.async[Unit] { cb =>
+        Routing.onOwner(poller(socket)):
+          LiveHandle.tryUse(socket.live, closedAsync(cb)): handle =>
+            // A raw-fd sendFile would race the fd's close in the threadpool, and libuv forbids mixing a
+            // reset with an in-flight uv_shutdown. Queued writes are fine: the RST discards them and
+            // libuv cancels their requests (each write callback fires UV_ECANCELED).
+            if socket.sendFileActive || socket.outputShutdown then
+              cb(Left(EmileError.IO.ConflictingOperation))
+              None
+            else
+              LibUV.uv_read_stop(handle): Unit
+              // The completion holder frees the handle in the close callback, as closeHandle does; the
+              // reset sends a RST rather than a FIN. Any read receiver in the slot is superseded (the
+              // read is stopped) and replaced at the same anchor key, so nothing leaks.
+              CallbackBridge.store(poller(socket), handle, new Routing.CloseCompletion(poller(socket), cb))
+              val rc = LibUV.uv_tcp_close_reset(handle, Routing.closeHandleCb)
+              if rc < 0 then
+                // libuv declined to close (a pending shutdown, or a refused SO_LINGER); the handle stays
+                // live for the socket's own release. Drop the completion holder and surface the code.
+                CallbackBridge.clear(poller(socket), handle)
+                cb(Left(IOMapping.fromCode(rc)))
+                None
+              else
+                // Mark closed so the socket's release does not uv_close the already-reset handle.
+                LiveHandle.markClosed(socket.live): Unit
+                None
+      },
+      EmileError.IO.Unexpected(_)
+    )
 
   // scala-native's posix layer does not bind SO_PEERCRED; the value (17) is Linux's (asm-generic/socket.h).
   private inline val SoPeerCred = 17
