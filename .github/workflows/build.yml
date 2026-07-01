@@ -81,7 +81,7 @@ jobs:
       EMILE_STATIC_LINK: ${{ matrix.link == 'Static' && 'true' || 'false' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up Coursier cache
@@ -112,7 +112,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up Coursier cache
@@ -149,7 +149,7 @@ jobs:
       DOCKER_IMAGE: shuwariafrica/el10-jdk:17
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up Coursier cache
@@ -168,7 +168,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Import signing key
@@ -213,7 +213,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up sbt
